@@ -23,3 +23,4 @@ datasets/
 
 # Temporary files
 *.tmp
+mnist_image.png
