@@ -1,0 +1,25 @@
+# Python bytecode and caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environment
+venv/
+.env/
+env/
+venv.bak/
+
+# IDE files
+.vscode/
+.idea/
+
+# Data files (IMPORTANT: We don't want to upload MNIST!)
+*.csv
+*.gz
+*.pkl
+data/
+datasets/
+
+# Temporary files
+*.tmp
