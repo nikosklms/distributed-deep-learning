@@ -24,22 +24,16 @@ BASE_PORT = 6000
 cnt_top = 0
 cnt_pot = 0
 
-def partition_info(lst_len, n):
-    k, m = divmod(lst_len, n)
-    indices = [i * k + min(i, m) for i in range(n + 1)]
-    sizes = [indices[i + 1] - indices[i] for i in range(n)]
-    offsets = indices[:-1]
-    return sizes, offsets
+def send_chunk(sock, chunk_list):
+    """Sends a list of numpy arrays as a single, raw byte buffer."""
+    all_bytes = b''.join([arr.astype(np.float32).tobytes() for arr in chunk_list])
+    
+    sock.sendall(len(all_bytes).to_bytes(8, 'big'))
+    
+    sock.sendall(all_bytes)
 
-
-# --- 3. Socket Utils (using pickle for lists) ---
-def send_data(sock, data):
-    data_bytes = pickle.dumps(data)
-    sock.sendall(len(data_bytes).to_bytes(8, 'big'))
-    sock.sendall(data_bytes)
-
-def recv_data(sock):
-    # Read exactly 8 bytes for the header
+def recv_bytes(sock):
+    """Receives a byte buffer sent by send_chunk."""
     header = b''
     while len(header) < 8:
         chunk = sock.recv(8 - len(header))
@@ -48,17 +42,45 @@ def recv_data(sock):
         header += chunk
 
     data_length = int.from_bytes(header, 'big')
-    if data_length <= 0 or data_length > 1 << 30:
+    if data_length <= 0 or data_length > 1 << 30: # 1GB limit
         raise ValueError(f"Invalid data length: {data_length}")
 
-    data_bytes = b''
-    while len(data_bytes) < data_length:
-        chunk = sock.recv(min(4096, data_length - len(data_bytes)))
-        if not chunk:
+    # We pre-allocate the entire buffer
+    data_bytes = bytearray(data_length)
+    view = memoryview(data_bytes)
+    
+    while data_length > 0:
+        # sock.recv_into() writes directly into our buffer (fast!)
+        nbytes = sock.recv_into(view, data_length)
+        if not nbytes:
             raise EOFError("Connection broken while receiving data")
-        data_bytes += chunk
+        
+        view = view[nbytes:] # Move the view "cursor" forward
+        data_length -= nbytes
 
-    return pickle.loads(data_bytes)
+    # Return the completed bytearray
+    return data_bytes
+
+def unpack_bytes(data_bytes, template_chunk_list):
+    """Unpacks raw bytes into a new list of arrays based on a template."""
+    received_chunk = []
+    offset = 0
+    
+    for template_arr in template_chunk_list:
+        num_bytes = np.prod(template_arr.shape) * 4 # 4 bytes for float32
+        
+        arr_bytes = data_bytes[offset : offset + num_bytes]
+        
+        new_arr = np.frombuffer(arr_bytes, dtype=np.float32).reshape(template_arr.shape).copy()
+        received_chunk.append(new_arr)
+        
+        offset += num_bytes
+    
+    # Sanity check
+    if offset != len(data_bytes):
+        raise ValueError(f"Unpack size mismatch. Expected {offset} bytes, got {len(data_bytes)}")
+
+    return received_chunk
 
 def chunk_list(lst, n):
     k, m = divmod(len(lst), n)
@@ -131,6 +153,7 @@ class RingAllReducer:
             s.listen()
             print(f"[Node {self.rank}] Listening on {self.my_info['ip']}:{self.my_info['port']}...")
             conn, addr = s.accept()
+            conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             self.listener_sock = conn
             print(f"[Node {self.rank}] Got connection from left neighbor {addr}")
 
@@ -144,7 +167,12 @@ class RingAllReducer:
                     if self.stop_flag:
                         break
                 for step in range(2 * num_steps - 2):
-                    chunk = recv_data(self.listener_sock)
+                    local_chunk_index = (self.rank - step - 1) % self.world_size
+                    template_chunk = self.chunks[local_chunk_index]
+
+                    # 2. Receive raw bytes
+                    raw_bytes = recv_bytes(self.listener_sock)
+                    chunk = unpack_bytes(raw_bytes, template_chunk)
                     print(f"{cnt_pot} {cnt_top} [Node {self.rank}] Received chunk at step {step}")
 
                     with self.cond:
@@ -169,6 +197,7 @@ class RingAllReducer:
 
     def _sender_thread(self):
         self.sender_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sender_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         right_ip = self.right_neighbor_info["ip"]
         right_port = self.connect_port
         print(f"[Node {self.rank}] Connecting to right neighbor at {right_ip}:{right_port}...")
@@ -194,7 +223,8 @@ class RingAllReducer:
             for step in range(2 * num_steps - 2):
                 with self.cond:
                     print(f"{cnt_pot} {cnt_top} [Node {self.rank}] Sending chunk at step {step}")
-                    send_data(self.sender_sock, self.chunks[(self.rank - step) % self.world_size])
+                    chunk_to_send = self.chunks[(self.rank - step) % self.world_size]
+                    send_chunk(self.sender_sock, chunk_to_send)
                     while not self.buffer_full and step != (2 * num_steps - 2) - 1:
                         print("sender here!!!")
                         self.cond.wait()
@@ -256,6 +286,14 @@ class RingAllReducer:
         self.listener.join()
         self.sender.join()
 
+def hash_list_of_arrays(arr_list):
+    """Creates a SHA256 hash of a list of numpy arrays."""
+    m = hashlib.sha256()
+    for arr in arr_list:
+        # Use .tobytes() to get the raw data in a consistent way
+        m.update(arr.astype(np.float32).tobytes())
+    return m.hexdigest()
+
 def main(rank, world_size):
     # --- Load and SHARD the data ---
     print(f"[Node {rank}] Loading and sharding data...")
@@ -287,6 +325,8 @@ def main(rank, world_size):
 
     # --- Connect the Ring ---
     comm = RingAllReducer(rank, world_size)
+
+    start = time.time()
 
     # --- The Training Loop ---
     for epoch in range(EPOCHS):
@@ -321,6 +361,9 @@ def main(rank, world_size):
             
             # Call the function to average them with our neighbor
             avg_gradients = comm.allreduce(gradients)
+
+            avg_grad_hash = hash_list_of_arrays(avg_gradients)
+            print(f"[Node {rank}] Iter {i}, Avg Grad Hash: {avg_grad_hash}")
             
             # Put the new averaged gradients back into our layers
             layer1.d_weights, layer1.d_biases, layer2.d_weights, layer2.d_biases = avg_gradients
@@ -331,7 +374,6 @@ def main(rank, world_size):
         avg_loss = running_loss / num_batches
         print(f"[Node {rank}] Epoch {epoch+1}/{EPOCHS}, Avg Loss: {avg_loss:.4f}")
 
-        import hashlib
         h = hashlib.md5(np.concatenate([p.weights.flatten() for p in [layer1, layer2]]).tobytes()).hexdigest()
         print(f"[Node {rank}] Param hash:", h)
         
@@ -346,6 +388,9 @@ def main(rank, world_size):
         predictions = np.argmax(logits, axis=1)
         accuracy = np.mean(predictions == y_test)
         print(f"\n[Node 0] FINAL Test Accuracy: {accuracy * 100:.2f}%")
+
+        end = time.time()
+        print(f"Elapsed time: {end - start:.6f} seconds")
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:
