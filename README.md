@@ -1,25 +1,28 @@
 # ⚙️ Mini Distributed Deep Learning Platform
 
-This is a project to build a small-scale distributed deep learning framework from scratch in Python, using only NumPy for the core logic.
+This project is a custom, from-scratch implementation of a distributed deep learning framework in Python. It uses a **Ring-AllReduce** algorithm to synchronize gradients for data-parallel training, similar to how modern frameworks like **Horovod** or **PyTorch's DDP** operate.
 
-The goal is to build a mini-version of PyTorch's `DistributedDataParallel` or Horovod to understand the core principles of distributed training.
+The entire neural network (layers, optimizer, and loss) is built using **only NumPy**.
 
-## Features / Roadmap
+## Core Features
 
-- [ ] **Phase 0: The Core (NumPy NN)**
-  - [ ] Build a simple neural network library using only NumPy.
-  - [ ] Implement `Linear` and `ReLU` layers (`forward`/`backward`).
-  - [ ] Implement `CrossEntropyLoss` and `SGD` optimizer.
-  - [ ] Train successfully on MNIST on a single machine.
+* **Neural Network Engine from Scratch:** All components are built from the ground up:
+    * `Linear` Layer (with He initialization)
+    * `ReLU` Activation
+    * `CrossEntropyLoss` (with stable Softmax)
+    * `SGD` Optimizer
+* **Ring-AllReduce Implementation:** A multi-threaded, peer-to-peer (P2P) networking implementation of the Ring-AllReduce algorithm (Reduce-Scatter + All-Gather) to average gradients.
+* **Service Discovery:** A simple discovery server allows workers to find each other, register, and form the communication ring.
+* **Data-Parallel Training:** The MNIST training dataset is automatically sharded (split) among all participating workers for parallel processing.
 
-- [ ] **Phase 1: The Network Pipe (Sockets/gRPC)**
-  - [ ] Send NumPy arrays between a client and server.
+## How to Run
 
-- [ ] **Phase 2: V1.0 - Parameter Server**
-  - [ ] Implement training with one central parameter server and multiple workers.
+This system requires one **Discovery Server** and **N** **Workers**.
 
-- [ ] **Phase 3: V2.0 - AllReduce (Ring-AllReduce)**
-  - [ ] Implement a decentralized training backend (Ring-AllReduce).
+### 1. Start the Discovery Server
 
-- [ ] **Phase 4: Containerize**
-  - [ ] Use Docker and Docker Compose to launch the cluster.
+This script acts as the coordinator to help workers find each other. It must be running first.
+
+```bash
+# In your first terminal:
+(venv) $ python3 discovery_server.py
