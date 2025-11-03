@@ -1,8 +1,12 @@
 import numpy as np
 
-class linear:
-    def __init__(self, input_size, output_size):
-        self.weights = np.random.randn(input_size, output_size)*np.sqrt(2.0/input_size)
+class Linear:
+    def __init__(self, input_size, output_size, seed=None):
+        if seed is not None:
+            rng = np.random.default_rng(seed)
+            self.weights = rng.standard_normal((input_size, output_size)) * np.sqrt(2.0 / input_size)
+        else:
+            self.weights = np.random.randn(input_size, output_size)*np.sqrt(2.0/input_size)
         self.biases = np.zeros(output_size)
 
         self.d_weights = None
@@ -16,7 +20,7 @@ class linear:
 
     def backward(self, d_output):
         self.d_weights = np.dot(self.X.T, d_output)
-        self.d_bias = np.sum(d_output, axis=0)
+        self.d_biases = np.sum(d_output, axis=0)
         d_input = np.dot(d_output, self.weights.T)
         
         return d_input
@@ -78,10 +82,10 @@ class SGD:
         for layer in self.parameters:
             if hasattr(layer, 'weights'):
                 layer.weights -= self.learning_rate * layer.d_weights
-                layer.bias -= self.learning_rate * layer.d_biases
+                layer.biases -= self.learning_rate * layer.d_biases
     
     def zero_grad(self):
         for layer in self.parameters:
             if hasattr(layer, 'weights'):
                 layer.d_weights = None
-                layer.d_bias = None
+                layer.d_biases = None
