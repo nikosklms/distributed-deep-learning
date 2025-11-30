@@ -7,7 +7,8 @@ class LinearGPU:
             cp.random.seed(seed)
 
         self.weights = cp.random.randn(input_size, output_size, dtype=cp.float32) * cp.sqrt(2.0 / input_size)
-        self.biases = cp.zeros(output_size, dtype=np.float32)
+        self.weights = self.weights.astype(np.float16)
+        self.biases = cp.zeros(output_size, dtype=np.float16)
 
         self.d_weights = None
         self.d_biases = None
@@ -62,7 +63,7 @@ class CrossEntropyLossGPU:
         self.probs = exps / cp.sum(exps, axis=1, keepdims=True)
 
         #one-hot encode the labels
-        self.labels = cp.zeros((batch_size, num_classes), dtype=cp.float32)
+        self.labels = cp.zeros((batch_size, num_classes), dtype=cp.float16)
         self.labels[cp.arange(batch_size), labels] = 1
 
         #calc cross-entropy

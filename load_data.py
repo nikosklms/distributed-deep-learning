@@ -12,6 +12,9 @@ def load_mnist():
     X_train, X_test = X[:60000], X[60000:]
     y_train, y_test = y[:60000], y[60000:]
 
+    X_train = X_train.astype(np.float16)
+    X_test = X_test.astype(np.float16)
+
     return X_train, y_train, X_test, y_test
 
 def show_image(image, label):

@@ -27,7 +27,7 @@ cnt_pot = 0
 
 def send_chunk(sock, chunk_list):
     """Sends a list of numpy arrays as a single, raw byte buffer."""
-    all_bytes = b''.join([arr.astype(np.float32).tobytes() for arr in chunk_list])
+    all_bytes = b''.join([arr.astype(np.float16).tobytes() for arr in chunk_list])
     
     sock.sendall(len(all_bytes).to_bytes(8, 'big'))
     
@@ -68,11 +68,11 @@ def unpack_bytes(data_bytes, template_chunk_list):
     offset = 0
     
     for template_arr in template_chunk_list:
-        num_bytes = np.prod(template_arr.shape) * 4 # 4 bytes for float32
+        num_bytes = np.prod(template_arr.shape) * 2 # 4 bytes for float32
         
         arr_bytes = data_bytes[offset : offset + num_bytes]
         
-        new_arr = np.frombuffer(arr_bytes, dtype=np.float32).reshape(template_arr.shape).copy()
+        new_arr = np.frombuffer(arr_bytes, dtype=np.float16).reshape(template_arr.shape).copy()
         received_chunk.append(new_arr)
         
         offset += num_bytes
