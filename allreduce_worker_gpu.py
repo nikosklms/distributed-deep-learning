@@ -7,6 +7,7 @@ import sys
 import pickle
 import hashlib
 import cupy as cp
+import fast_net
 
 from load_data import load_mnist
 from core_gpu import LinearGPU, ReLUGPU, CrossEntropyLossGPU, SGD_GPU
@@ -25,63 +26,118 @@ BASE_PORT = 6000
 cnt_top = 0
 cnt_pot = 0
 
+# def send_chunk(sock, chunk_list):
+#     """Sends a list of numpy arrays as a single, raw byte buffer."""
+#     all_bytes = b''.join([arr.astype(np.float16).tobytes() for arr in chunk_list])
+    
+#     sock.sendall(len(all_bytes).to_bytes(8, 'big'))
+    
+#     sock.sendall(all_bytes)
+
 def send_chunk(sock, chunk_list):
-    """Sends a list of numpy arrays as a single, raw byte buffer."""
-    all_bytes = b''.join([arr.astype(np.float16).tobytes() for arr in chunk_list])
+    """Sends a list of numpy arrays using C fast socket (No Concatenation)."""
     
-    sock.sendall(len(all_bytes).to_bytes(8, 'big'))
-    
-    sock.sendall(all_bytes)
-
-def recv_bytes(sock):
-    """Receives a byte buffer sent by send_chunk."""
-    header = b''
-    while len(header) < 8:
-        chunk = sock.recv(8 - len(header))
-        if not chunk:
-            return None
-        header += chunk
-
-    data_length = int.from_bytes(header, 'big')
-    if data_length <= 0 or data_length > 1 << 30: # 1GB limit
-        raise ValueError(f"Invalid data length: {data_length}")
-
-    # We pre-allocate the entire buffer
-    data_bytes = bytearray(data_length)
-    view = memoryview(data_bytes)
-    
-    while data_length > 0:
-        # sock.recv_into() writes directly into our buffer (fast!)
-        nbytes = sock.recv_into(view, data_length)
-        if not nbytes:
-            raise EOFError("Connection broken while receiving data")
+    # Προετοιμασία: Βεβαιωνόμαστε ότι κάθε κομμάτι είναι float16 και contiguous.
+    # Αυτό είναι πολύ φτηνό σε σχέση με το να ενώσουμε τα πάντα.
+    ready_list = []
+    for arr in chunk_list:
+        # Flatten (αν δεν είναι ήδη) -> Επιστρέφει συνήθως contiguous copy ή view
+        flat = arr.ravel() 
         
-        view = view[nbytes:] # Move the view "cursor" forward
-        data_length -= nbytes
+        # Μετατροπή σε float16 αν χρειάζεται
+        if flat.dtype != np.float16:
+            flat = flat.astype(np.float16)
+            
+        # Βεβαιωνόμαστε ότι είναι συνεχόμενο στη μνήμη (για να το διαβάσει η C)
+        if not flat.flags['C_CONTIGUOUS']:
+            flat = np.ascontiguousarray(flat)
+            
+        ready_list.append(flat)
 
-    # Return the completed bytearray
-    return data_bytes
+    # 2. ΚΑΛΟΥΜΕ ΤΗ C ΣΥΝΑΡΤΗΣΗ ΠΟΥ ΔΕΧΕΤΑΙ ΛΙΣΤΑ
+    fast_net.send_list(sock.fileno(), ready_list)
 
-def unpack_bytes(data_bytes, template_chunk_list):
-    """Unpacks raw bytes into a new list of arrays based on a template."""
-    received_chunk = []
+# def recv_bytes(sock):
+#     """Receives a byte buffer sent by send_chunk."""
+#     header = b''
+#     while len(header) < 8:
+#         chunk = sock.recv(8 - len(header))
+#         if not chunk:
+#             return None
+#         header += chunk
+
+#     data_length = int.from_bytes(header, 'big')
+#     if data_length <= 0 or data_length > 1 << 30: # 1GB limit
+#         raise ValueError(f"Invalid data length: {data_length}")
+
+#     # We pre-allocate the entire buffer
+#     data_bytes = bytearray(data_length)
+#     view = memoryview(data_bytes)
+    
+#     while data_length > 0:
+#         # sock.recv_into() writes directly into our buffer (fast!)
+#         nbytes = sock.recv_into(view, data_length)
+#         if not nbytes:
+#             raise EOFError("Connection broken while receiving data")
+        
+#         view = view[nbytes:] # Move the view "cursor" forward
+#         data_length -= nbytes
+
+#     # Return the completed bytearray
+#     return data_bytes
+
+# def unpack_bytes(data_bytes, template_chunk_list):
+#     """Unpacks raw bytes into a new list of arrays based on a template."""
+#     received_chunk = []
+#     offset = 0
+    
+#     for template_arr in template_chunk_list:
+#         num_bytes = np.prod(template_arr.shape) * 2 # 4 bytes for float32
+        
+#         arr_bytes = data_bytes[offset : offset + num_bytes]
+        
+#         new_arr = np.frombuffer(arr_bytes, dtype=np.float16).reshape(template_arr.shape).copy()
+#         received_chunk.append(new_arr)
+        
+#         offset += num_bytes
+    
+#     # Sanity check
+#     if offset != len(data_bytes):
+#         raise ValueError(f"Unpack size mismatch. Expected {offset} bytes, got {len(data_bytes)}")
+
+#     return received_chunk
+
+def recv_and_unpack(sock, template_chunk_list):
+    """Receives data directly into a numpy array using C fast socket."""
+    
+    # 1. Υπολογίζουμε πόσα στοιχεία (float16 numbers) περιμένουμε συνολικά
+    total_elements = sum(arr.size for arr in template_chunk_list)
+    
+    # 2. Φτιάχνουμε έναν κενό "μεγάλο" πίνακα για να υποδεχτεί τα δεδομένα
+    # Χρησιμοποιούμε np.empty για ταχύτητα (δεν μηδενίζει τη μνήμη)
+    recv_buffer = np.empty(total_elements, dtype=np.float16)
+    
+    # 3. ΚΑΛΟΥΜΕ ΤΗ C ΣΥΝΑΡΤΗΣΗ ΝΑ ΤΟ ΓΕΜΙΣΕΙ
+    # Αυτή θα μπλοκάρει μέχρι να έρθουν όλα τα bytes
+    # Επιστρέφει True αν πέτυχε, False αν έκλεισε η σύνδεση
+    success = fast_net.recv_into_array(sock.fileno(), recv_buffer)
+    
+    if not success:
+        raise EOFError("Connection broken while receiving data in C module")
+    
+    # 4. Κόβουμε τον μεγάλο πίνακα στα μικρά κομμάτια (Reshape / View)
+    # Εδώ δεν γίνεται αντιγραφή μνήμης, απλά φτιάχνουμε "views"
+    restored_chunk = []
     offset = 0
-    
-    for template_arr in template_chunk_list:
-        num_bytes = np.prod(template_arr.shape) * 2 # 4 bytes for float32
+    for template in template_chunk_list:
+        size = template.size
+        # Παίρνουμε το κομμάτι και του δίνουμε το σωστό σχήμα (π.χ. 784x128)
+        arr_view = recv_buffer[offset : offset+size].reshape(template.shape)
+        restored_chunk.append(arr_view)
+        offset += size
         
-        arr_bytes = data_bytes[offset : offset + num_bytes]
-        
-        new_arr = np.frombuffer(arr_bytes, dtype=np.float16).reshape(template_arr.shape).copy()
-        received_chunk.append(new_arr)
-        
-        offset += num_bytes
-    
-    # Sanity check
-    if offset != len(data_bytes):
-        raise ValueError(f"Unpack size mismatch. Expected {offset} bytes, got {len(data_bytes)}")
+    return restored_chunk
 
-    return received_chunk
 
 def chunk_list(lst, n):
     k, m = divmod(len(lst), n)
@@ -172,8 +228,9 @@ class RingAllReducer:
                     template_chunk = self.chunks[local_chunk_index]
 
                     # 2. Receive raw bytes
-                    raw_bytes = recv_bytes(self.listener_sock)
-                    chunk = unpack_bytes(raw_bytes, template_chunk)
+                    # raw_bytes = recv_bytes(self.listener_sock)
+                    # chunk = unpack_bytes(raw_bytes, template_chunk)
+                    chunk = recv_and_unpack(self.listener_sock, template_chunk)
                     print(f"{cnt_pot} {cnt_top} [Node {self.rank}] Received chunk at step {step}")
 
                     with self.cond:
