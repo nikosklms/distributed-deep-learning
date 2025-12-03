@@ -8,16 +8,18 @@ import pickle
 import hashlib
 import cupy as cp
 import fast_net
+import os
+import queue
 
 from load_data import load_mnist
 from core_gpu import LinearGPU, ReLUGPU, CrossEntropyLossGPU, SGD_GPU
 
 # --- Training Config ---
-EPOCHS = 10
-BATCH_SIZE = 1024
-LEARNING_RATE = 1
+EPOCHS = 10 * int(sys.argv[2])
+BATCH_SIZE = 0
+LEARNING_RATE = 0
 
-DISCOVERY_IP = "0.0.0.0"  # IP of discovery server
+DISCOVERY_IP = os.getenv("DISCOVERY_IP", "0.0.0.0")  # IP of discovery server
 DISCOVERY_PORT = 5000
 
 # Choose port
@@ -144,13 +146,15 @@ def chunk_list(lst, n):
     return [lst[i*k + min(i, m):(i+1)*k + min(i+1, m)] for i in range(n)]
 
 # --- 4. The AllReduce Function ---
-# This class wraps all our ring logic
+# This class wraps all our ring logic 
+
 class RingAllReducer:
     def __init__(self, rank, world_size):
         self.rank = rank
         self.world_size = world_size
 
-        # Get local IP
+        # --- 1. Discovery & Setup ---
+        # Βρίσκουμε την τοπική IP
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
             s.connect(("8.8.8.8", 80))
@@ -159,190 +163,160 @@ class RingAllReducer:
             s.close()
 
         self.listen_port = BASE_PORT + self.rank
-        print(f"My listen port is {self.listen_port}")
-
-        # Discovery info
         self.my_info = {"ip": local_ip, "port": self.listen_port, "rank": self.rank}
+        
+        print(f"[Node {self.rank}] Setup: Listening on {local_ip}:{self.listen_port}")
+
+        # Συνδεόμαστε στον Discovery Server
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.connect((DISCOVERY_IP, DISCOVERY_PORT))
             s.sendall(pickle.dumps(self.my_info))
             data = s.recv(4096)
             all_clients = pickle.loads(data)
 
-        print(f"[Node {self.rank}] Discovered clients:", all_clients)
-
-        # Sort by rank
+        # Ταξινόμηση και εύρεση γειτόνων
         all_clients.sort(key=lambda x: x["rank"])
         my_index = next(i for i, c in enumerate(all_clients) if c["rank"] == self.rank)
+        
+        self.right_neighbor = all_clients[(my_index + 1) % world_size]
+        # (Ο αριστερός γείτονας δεν χρειάζεται ως info, απλά δεχόμαστε σύνδεση από αυτόν)
 
-        self.right_neighbor_info = all_clients[(my_index + 1) % world_size]
-        self.left_neighbor_info = all_clients[(my_index - 1 + world_size) % world_size]
-        self.connect_port = self.right_neighbor_info["port"]
-
-        self.listener_sock = None
+        # --- 2. Permanent Connection Establishment ---
+        # Ανοίγουμε τα sockets ΜΙΑ φορά στην αρχή για να γλιτώσουμε χρόνο αργότερα.
+        
+        # A. Listener Socket (Server)
+        self.server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.server_sock.bind((local_ip, self.listen_port))
+        self.server_sock.listen(1)
+        
+        # B. Connection Logic (Async για αποφυγή Deadlock)
+        # Ξεκινάμε thread να συνδεθεί στον δεξιά, ενώ εμείς περιμένουμε τον αριστερά.
         self.sender_sock = None
+        self.listener_sock = None
+        
+        connect_thread = threading.Thread(target=self._connect_to_right)
+        connect_thread.start()
+        
+        # Περιμένουμε τον αριστερό να συνδεθεί σε εμάς
+        print(f"[Node {self.rank}] Waiting for left neighbor...")
+        conn, addr = self.server_sock.accept()
+        conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1) # Σημαντικό για speed
+        self.listener_sock = conn
+        print(f"[Node {self.rank}] Accepted connection from {addr}")
+        
+        # Περιμένουμε να ολοκληρωθεί και η δική μας σύνδεση στον δεξιά
+        connect_thread.join()
+        print(f"[Node {self.rank}] Ring established!")
 
-        print(f"[Node {self.rank}] Left neighbor: {self.left_neighbor_info}")
-        print(f"[Node {self.rank}] Right neighbor: {self.right_neighbor_info}")
-
+        # State για το AllReduce
         self.chunks = []
-        self.buffer_full = False
-        self.cond = threading.Condition()
-        self.snd_mtx = threading.Lock()
-        self.snd_mtx.acquire()
-        self.listen_mtx = threading.Lock()
-        self.listen_mtx.acquire()
-        self.itteration_cnt = 0
-        self.stop_flag = False
 
-        self.listener_cnt = 0
-
-        # Start threads
-        self.listener = threading.Thread(target=self._listen_thread, daemon=True)
-        self.listener.start()
-        self.sender = threading.Thread(target=self._sender_thread, daemon=True)
-        self.sender.start()
-
-    def _listen_thread(self):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            s.bind((self.my_info["ip"], self.my_info["port"]))
-            s.listen()
-            print(f"[Node {self.rank}] Listening on {self.my_info['ip']}:{self.my_info['port']}...")
-            conn, addr = s.accept()
-            conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            self.listener_sock = conn
-            print(f"[Node {self.rank}] Got connection from left neighbor {addr}")
-
-            num_steps = self.world_size
-            counter = 0
-            while True:
-                counter += 1
-                print(f"listener: iteration {counter}")
-                self.listen_mtx.acquire()
-                with self.cond:
-                    if self.stop_flag:
-                        break
-                for step in range(2 * num_steps - 2):
-                    local_chunk_index = (self.rank - step - 1) % self.world_size
-                    template_chunk = self.chunks[local_chunk_index]
-
-                    # 2. Receive raw bytes
-                    # raw_bytes = recv_bytes(self.listener_sock)
-                    # chunk = unpack_bytes(raw_bytes, template_chunk)
-                    chunk = recv_and_unpack(self.listener_sock, template_chunk)
-                    print(f"{cnt_pot} {cnt_top} [Node {self.rank}] Received chunk at step {step}")
-
-                    with self.cond:
-                        self.listener_cnt += 1
-                        if step >= num_steps - 1:
-                            self.chunks[(self.rank - step - 1) % self.world_size] = chunk
-                        else:
-                            # Scatter-Reduce phase (sum the arrays in the chunk)                            
-                            local_chunk_index = (self.rank - step - 1) % self.world_size
-                            
-                            # Loop through each array in the chunk list and add in-place
-                            for i in range(len(self.chunks[local_chunk_index])):
-                                self.chunks[local_chunk_index][i] += chunk[i]
-                        self.buffer_full = True
-                        self.cond.notify_all()
-
-                with self.cond:
-                    self.itteration_cnt += 1
-                    self.cond.notify_all()
-
-            print("Listener ended")
-
-    def _sender_thread(self):
-        self.sender_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.sender_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        right_ip = self.right_neighbor_info["ip"]
-        right_port = self.connect_port
-        print(f"[Node {self.rank}] Connecting to right neighbor at {right_ip}:{right_port}...")
-
+    def _connect_to_right(self):
+        """Προσπαθεί επίμονα να συνδεθεί στον δεξιά γείτονα."""
+        target_ip = self.right_neighbor["ip"]
+        target_port = self.right_neighbor["port"]
+        
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        
         while True:
             try:
-                self.sender_sock.connect((right_ip, right_port))
+                sock.connect((target_ip, target_port))
+                self.sender_sock = sock
+                print(f"[Node {self.rank}] Connected to right neighbor {target_ip}:{target_port}")
                 break
             except ConnectionRefusedError:
-                time.sleep(1)
+                # Ο γείτονας δεν έχει σηκώσει ακόμα το server socket, περιμένουμε λίγο
+                time.sleep(0.1)
 
-        print(f"[Node {self.rank}] Connected to right neighbor at {right_ip}:{right_port}")
-        counter = 0
-        while True:
-            counter += 1
-            print(f"sender: iteration {counter}")
-            self.snd_mtx.acquire()
-            with self.cond:
-                if self.stop_flag:
-                    break
+    def _listen_task(self, send_queue, num_steps):
+        """
+        Thread που ακούει δεδομένα.
+        Μόλις λάβει και επεξεργαστεί ένα κομμάτι, ενημερώνει την ουρά 
+        ότι 'το τάδε κομμάτι είναι έτοιμο να σταλεί στον επόμενο'.
+        """
+        for step in range(2 * num_steps - 2):
+            # Υπολογισμός: Ποιο κομμάτι (chunk index) περιμένουμε σε αυτό το βήμα;
+            # Στο Ring-AllReduce τα chunks έρχονται ανάποδα από τη φορά του ρολογιού.
+            recv_chunk_idx = (self.rank - step - 1) % self.world_size
+            
+            # 1. Λήψη (Blocking C call - High Performance)
+            # Χρειαζόμαστε το template για να ξέρει η C πόσα bytes να περιμένει
+            template = self.chunks[recv_chunk_idx]
+            received_data = recv_and_unpack(self.listener_sock, template)
+            
+            # 2. Επεξεργασία (Compute)
+            if step < num_steps - 1:
+                # Φάση Scatter-Reduce: Προσθέτουμε τα gradients
+                for i in range(len(self.chunks[recv_chunk_idx])):
+                    self.chunks[recv_chunk_idx][i] += received_data[i]
+            else:
+                # Φάση All-Gather: Αντικαθιστούμε (λαμβάνουμε το τελικό άθροισμα)
+                self.chunks[recv_chunk_idx] = received_data
+            
+            # 3. Ειδοποίηση Sender
+            # "Το κομμάτι recv_chunk_idx ενημερώθηκε, στείλ' το παρακάτω!"
+            send_queue.put(recv_chunk_idx)
 
-            num_steps = self.world_size
-            for step in range(2 * num_steps - 2):
-                with self.cond:
-                    print(f"{cnt_pot} {cnt_top} [Node {self.rank}] Sending chunk at step {step}")
-                    chunk_to_send = self.chunks[(self.rank - step) % self.world_size]
-                    send_chunk(self.sender_sock, chunk_to_send)
-                    while not self.buffer_full and step != (2 * num_steps - 2) - 1:
-                        print("sender here!!!")
-                        self.cond.wait()
-                    if (self.listener_cnt-1) > step:
-                        continue
-                    self.buffer_full = False
-
-            with self.cond:
-                self.itteration_cnt += 1
-                self.cond.notify_all()
-
-        print("Sender ended")
+    def _sender_task(self, send_queue, num_steps):
+        """
+        Thread που στέλνει δεδομένα.
+        Περιμένει εντολές από την ουρά.
+        """
+        for _ in range(2 * num_steps - 2):
+            # 1. Περιμένουμε να γίνει διαθέσιμο ένα κομμάτι (Blocking)
+            chunk_idx_to_send = send_queue.get()
+            
+            # 2. Αποστολή (Blocking C call - High Performance)
+            send_chunk(self.sender_sock, self.chunks[chunk_idx_to_send])
+            
+            # Σηματοδοτούμε ότι τελειώσαμε
+            send_queue.task_done()
 
     def allreduce(self, data_list):
-        # Step 1: split into chunks
+        # 1. Προετοιμασία
         self.chunks = chunk_list(data_list, self.world_size)
-        self.listen_mtx.release()
-        self.snd_mtx.release()
-
-        with self.cond:
-            while self.itteration_cnt != 2:
-                self.cond.wait()
-            self.itteration_cnt = 0
-            self.listener_cnt = 0
-            self.buffer_full = False
-
-        print("Both listener and sender ended")
-        print(f"Final chunk list lengths: {[len(c) for c in self.chunks]}")
-
-        # Step 2: average each chunk
-        averaged_chunks = [
-            [arr / self.world_size for arr in chunk]
-            for chunk in self.chunks
-        ]
-
-        # Step 3: reconstruct full list using same logic as chunk_list()
-        k, m = divmod(len(data_list), self.world_size)
+        num_steps = self.world_size
+        
+        # Η ουρά επικοινωνίας μεταξύ Listener -> Sender για ΑΥΤΟΝ τον γύρο
+        send_queue = queue.Queue()
+        
+        # 2. Kickstart (Έναρξη)
+        # Στο βήμα 0, πρέπει να στείλουμε το δικό μας κομμάτι.
+        # Το βάζουμε στην ουρά για να το πάρει ο Sender και να ξεκινήσει το ντόμινο.
+        my_chunk_idx = self.rank
+        send_queue.put(my_chunk_idx)
+        
+        # 3. Εκκίνηση Threads
+        # Φτιάχνουμε "φρέσκα" threads για αυτό το round.
+        # Το overhead δημιουργίας είναι αμελητέο (micro-seconds) μπροστά στην ασφάλεια που παρέχει.
+        t_listen = threading.Thread(target=self._listen_task, args=(send_queue, num_steps))
+        t_send = threading.Thread(target=self._sender_task, args=(send_queue, num_steps))
+        
+        t_listen.start()
+        t_send.start()
+        
+        # 4. Αναμονή Τερματισμού
+        t_listen.join()
+        t_send.join()
+        
+        # 5. Ανασυγκρότηση και Μέσος Όρος
         averaged_gradients = []
-        for i in range(self.world_size):
-            averaged_gradients.extend(averaged_chunks[i])
-
-        # Debug info
-        print(f"Reconstructed averaged gradients len={len(averaged_gradients)}, expected={len(data_list)}")
-
-        # Sanity check
-        if len(averaged_gradients) != len(data_list):
-            raise ValueError(f"Size mismatch: got {len(averaged_gradients)}, expected {len(data_list)}")
-
+        
+        # Ενώνουμε τα chunks και διαιρούμε με τον αριθμό των workers (Average)
+        for chunk in self.chunks:
+            for arr in chunk:
+                arr /= self.world_size # In-place division (γρήγορο)
+                averaged_gradients.append(arr)
+            
         return averaged_gradients
 
     def close(self):
-        self.sender_sock.close()
-        self.listener_sock.close()
-        with self.cond:
-            self.stop_flag = True
-            self.snd_mtx.release()
-            self.listen_mtx.release()
+        if self.sender_sock: self.sender_sock.close()
+        if self.listener_sock: self.listener_sock.close()
+        self.server_sock.close()
 
-        self.listener.join()
-        self.sender.join()
 
 def hash_list_of_arrays(arr_list):
     """Creates a SHA256 hash of a list of numpy arrays."""
@@ -356,7 +330,16 @@ def main(rank, world_size, batch_size, hidden_size, learning_rate):
     # --- Load and SHARD the data ---
     print(f"[Node {rank}] Loading and sharding data...")
     X_train_all, y_train_all, X_test, y_test = load_mnist()
+
+    # mix-blend the data so all workers have the same sample,
+    # but the same "random" state
+    indices = np.arange(X_train_all.shape[0])
+    np.random.seed(42) # Σταθερό seed για να ανακατευτούν το ίδιο σε όλους
+    np.random.shuffle(indices)
     
+    X_train_all = X_train_all[indices]
+    y_train_all = y_train_all[indices]
+
     # Split the 60,000 samples among all workers
     num_samples = X_train_all.shape[0]
     samples_per_node = num_samples // world_size
@@ -459,7 +442,7 @@ def main(rank, world_size, batch_size, hidden_size, learning_rate):
             optimizer.step()
         
         avg_loss = running_loss / num_batches
-        print(f"[Node {rank}] Epoch {epoch+1}/{EPOCHS}, Avg Loss: {avg_loss:.4f}")
+        print(f"[Node {rank}] Epoch {epoch+1}/{EPOCHS}, Avg Loss: {avg_loss:.4f} {running_loss} {num_batches}")
 
     print(f"AVG1 (Compute) is {avg1/(EPOCHS*num_batches):.5f} and AVG2 (Comm) is {avg2/(EPOCHS*num_batches):.5f}")
 

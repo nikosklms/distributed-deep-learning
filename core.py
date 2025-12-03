@@ -4,11 +4,14 @@ class Linear:
     def __init__(self, input_size, output_size, seed=None):
         if seed is not None:
             rng = np.random.default_rng(seed)
-            self.weights = rng.standard_normal((input_size, output_size)) * np.sqrt(2.0 / input_size)
+            # Use .astype() to convert the array
+            self.weights = rng.standard_normal((input_size, output_size)).astype(np.float32) * np.sqrt(2.0 / input_size).astype(np.float32)
         else:
-            self.weights = np.random.randn(input_size, output_size)*np.sqrt(2.0/input_size)
-        self.biases = np.zeros(output_size)
-
+            # Use .astype() here as well
+            self.weights = np.random.randn(input_size, output_size).astype(np.float32) * np.sqrt(2.0 / input_size).astype(np.float32)
+        
+        # Add dtype=np.float32 here
+        self.biases = np.zeros(output_size, dtype=np.float32)
         self.d_weights = None
         self.d_biases = None
 

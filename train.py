@@ -1,11 +1,12 @@
 import numpy as np
 from load_data import load_mnist
 from core import Linear, ReLU, CrossEntropyLoss, SGD
+import time
 
 # --- 1. Set up Hyperparameters ---
 LEARNING_RATE = 0.1
 EPOCHS = 10
-BATCH_SIZE = 32  # How many images to process at once
+BATCH_SIZE = 16  # How many images to process at once
 
 def main(): 
     # --- 2. Load Data ---
@@ -35,7 +36,7 @@ def main():
     # --- 4. Define Loss and Optimizer ---
     loss_function = CrossEntropyLoss()
     optimizer = SGD(parameters=parameters, learning_rate=LEARNING_RATE)
-
+    avg = 0
     # --- 5. The Training Loop ---
     print("Starting training...")
     for epoch in range(EPOCHS):
@@ -54,6 +55,7 @@ def main():
             X_batch = X_train_shuffled[start_idx:end_idx]
             y_batch = y_train_shuffled[start_idx:end_idx]
             
+            start1 = time.time()
             # --- 6. FORWARD PASS ---
             out1 = layer1.forward(X_batch)
             out_relu = activation1.forward(out1)
@@ -70,6 +72,11 @@ def main():
             d_layer2 = layer2.backward(d_logits)
             d_relu = activation1.backward(d_layer2)
             d_layer1 = layer1.backward(d_relu)
+
+            end1 = time.time()
+            avg += end1 - start1
+            print(f"Elapsed time1: {avg:.6f} seconds")
+
             
             # --- 8. UPDATE WEIGHTS ---
             optimizer.step()
@@ -77,9 +84,12 @@ def main():
         avg_loss = running_loss / num_batches
         print(f"Epoch {epoch+1}/{EPOCHS}, Average Loss: {avg_loss:.4f}")
 
+    avg = avg / (EPOCHS*num_batches)
+    print(f"AVG is {avg}")
+
     # --- 10. Test the Network ---
     print("Training finished. Evaluating on test set...")
-    
+
     # Run a forward pass on the *entire* test set
     out1 = layer1.forward(X_test)
     out_relu = activation1.forward(out1)

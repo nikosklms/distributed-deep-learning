@@ -67,7 +67,7 @@ class CrossEntropyLossGPU:
         self.labels[cp.arange(batch_size), labels] = 1
 
         #calc cross-entropy
-        correct_logprobs = -cp.log(self.probs[cp.arange(batch_size), labels] + 1e-9)
+        correct_logprobs = -cp.log(self.probs[cp.arange(batch_size), labels] + 1e-4)
         loss = cp.sum(correct_logprobs) / batch_size
 
         return loss

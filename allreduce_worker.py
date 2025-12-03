@@ -12,7 +12,7 @@ from core import Linear, ReLU, CrossEntropyLoss, SGD
 
 # --- Training Config ---
 EPOCHS = 10
-BATCH_SIZE = 32
+BATCH_SIZE = 16
 LEARNING_RATE = 0.1 # The 0.1 you found works well!
 
 DISCOVERY_IP = "0.0.0.0"  # IP of discovery server
@@ -327,7 +327,8 @@ def main(rank, world_size):
     comm = RingAllReducer(rank, world_size)
 
     start = time.time()
-
+    avg1 = 0
+    avg2 = 0
     # --- The Training Loop ---
     for epoch in range(EPOCHS):
         global cnt_pot
@@ -341,6 +342,7 @@ def main(rank, world_size):
             X_batch = X_train[i*BATCH_SIZE : (i+1)*BATCH_SIZE]
             y_batch = y_train[i*BATCH_SIZE : (i+1)*BATCH_SIZE]
 
+            start1 = time.time()
             # --- 1. FORWARD PASS ---
             out1 = layer1.forward(X_batch)
             out_relu = activation1.forward(out1)
@@ -355,12 +357,17 @@ def main(rank, world_size):
             d_relu = activation1.backward(d_layer2)
             d_layer1 = layer1.backward(d_relu)
             
+            end1 = time.time()
+            avg1 += end1 - start1
             # --- 3. ALLREDUCE GRADIENTS ---
             # Create a list of all gradients
             gradients = [layer1.d_weights, layer1.d_biases, layer2.d_weights, layer2.d_biases]
             
+            start2 = time.time()
             # Call the function to average them with our neighbor
             avg_gradients = comm.allreduce(gradients)
+            end2 = time.time()
+            avg2 += end2 - start2
 
             avg_grad_hash = hash_list_of_arrays(avg_gradients)
             print(f"[Node {rank}] Iter {i}, Avg Grad Hash: {avg_grad_hash}")
@@ -376,7 +383,9 @@ def main(rank, world_size):
 
         h = hashlib.md5(np.concatenate([p.weights.flatten() for p in [layer1, layer2]]).tobytes()).hexdigest()
         print(f"[Node {rank}] Param hash:", h)
-        
+    
+    print(f"AVG1 is {avg1/(EPOCHS*num_batches)} and AVG2 is {avg2/(EPOCHS*num_batches)}")
+
     comm.close()
 
     # --- Test the Network (Only Node 0 does this) ---
