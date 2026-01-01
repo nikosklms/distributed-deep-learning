@@ -1,159 +1,284 @@
 # Distributed Deep Learning Framework with Ring-AllReduce
 
-> A custom, high-performance distributed deep learning framework built from scratch.
+> **A high‑performance, from‑scratch distributed deep learning framework**
 
-This project implements neural network primitives (`Linear`, `CNN`, `BatchNorm`, `Dropout`) and optimizers (`SGD`, `AdamW`) without relying on PyTorch or TensorFlow for the core logic.
+This project is a **custom-built deep learning framework** that implements neural networks, optimizers, and distributed training *without relying on PyTorch or TensorFlow for core logic*.
 
-The distributed backend utilizes a custom **Ring-AllReduce** algorithm implemented over TCP sockets, accelerated by a C-extension (`fast_net`) for raw buffer transmission. The framework supports mixed-precision training (FP16/FP32) on GPUs via CuPy.
-
-
-
-## ✨ Key Features
-
-* **Custom Network Primitives:** Hand-written implementations of `Conv2d` (using strided `im2col`), `MaxPool2d`, `BatchNorm2d`, and `Dropout`.
-* **Distributed Backend:** A decentralized Ring-AllReduce architecture where workers exchange gradients with neighbors to synchronize the model.
-* **Hybrid Python/C Networking:** Critical socket operations are offloaded to a C extension (`fast_net`) to minimize Python overhead during gradient synchronization.
-* **GPU Acceleration:** Full support for CUDA operations using **CuPy** for both Linear and CNN models.
-* **Mixed Precision Training:** Implements FP16 storage for weights/gradients with FP32 master weights and dynamic loss scaling to maintain numerical stability.
-* **Discovery Mechanism:** A central discovery server handles the initial handshake (rendezvous) before workers switch to peer-to-peer ring communication.
+At its heart is a **decentralized Ring‑AllReduce** backend implemented over **TCP sockets**, accelerated with a **C extension (`fast_net`)** for raw buffer transmission. The framework supports **GPU acceleration via CuPy** and **mixed‑precision (FP16/FP32) training**.
 
 ---
 
-## 📂 Project Structure
+## Key Features
+
+* **Custom Neural Network Primitives**
+  Hand‑written implementations of:
+
+  * `Linear`, `ReLU`, `CrossEntropy`
+  * `Conv2d` (strided `im2col`), `MaxPool2d`
+  * `BatchNorm2d`, `Dropout`
+
+* **Decentralized Distributed Training**
+  Fully peer‑to‑peer **Ring‑AllReduce** architecture with no parameter server.
+
+* **Hybrid Python / C Networking**
+  Performance‑critical socket communication is offloaded to a C extension (`fast_net`) to minimize Python overhead.
+
+* **GPU Acceleration**
+  CUDA‑enabled training via **CuPy**, supporting both Linear and CNN workloads.
+
+* **Mixed‑Precision Training**
+  FP16 weights & gradients with FP32 master weights and **dynamic loss scaling** for numerical stability.
+
+* **Discovery and Rendezvous**
+  A lightweight discovery server initializes workers before switching to direct ring communication.
+
+---
+
+## Project Structure
 
 ### Core Components
-* `core.py`: Basic Neural Network layers (`Linear`, `ReLU`, `CrossEntropy`) for CPU.
-* `core_gpu.py`: GPU-accelerated Neural Network layers (`Linear`, `ReLU`, `CrossEntropy`, `AdamW`) using CuPy.
-* `core_cnn.py`: Advanced CNN layers (`Conv2d`, `BatchNorm`, `Pooling`) optimized for GPU.
 
-### Training Scripts (Workers)
-* `worker_cnn.py`: The main training script for CIFAR-10 using the CNN architecture and AdamW optimizer (GPU).
-* `allreduce_worker_gpu.py`: GPU-accelerated worker for MNIST training using Linear models and SGD.
-* `allreduce_worker.py`: CPU-based worker for MNIST training using Linear models and SGD.
+* `core.py`
+  CPU‑based neural network layers (`Linear`, `ReLU`, `CrossEntropy`)
 
-### Distributed Infrastructure
-* `discovery_server.py`: The coordination server. Workers register here to find their neighbors in the ring.
-* `distributed.py`: Implements the `RingAllReducer` class, managing the synchronization logic.
-* `fast_sockets.c`: C-extension code for direct memory access and socket transmission of Numpy/CuPy arrays.
-* `setup.py`: Build script for the C-extension.
+* `core_gpu.py`
+  GPU‑accelerated layers and optimizers (`Linear`, `ReLU`, `CrossEntropy`, `AdamW`) using CuPy
 
-### Data
-* `load_cifar.py` / `download_cifar.py`: Utilities to download and preprocess the CIFAR-10 dataset.
-* `load_data.py`: Utilities for the MNIST dataset.
+* `core_cnn.py`
+  Advanced CNN layers (`Conv2d`, `BatchNorm`, `Pooling`) optimized for GPU execution
 
 ---
 
-## ⚙️ Installation & Setup
+### Training Scripts (Workers)
+
+* `worker_cnn.py`
+  Distributed CNN training on **CIFAR‑10** using **AdamW** (GPU)
+
+* `allreduce_worker_gpu.py`
+  Distributed **MNIST** training with Linear models (GPU, SGD)
+
+* `allreduce_worker.py`
+  CPU‑based MNIST worker for debugging and validation
+
+---
+
+### Distributed Infrastructure
+
+* `discovery_server.py`
+  Rendezvous server for worker discovery and ring formation
+
+* `distributed.py`
+  Implements the `RingAllReducer` synchronization logic
+
+* `fast_sockets.c`
+  C extension for zero‑copy socket transmission of NumPy / CuPy buffers
+
+* `setup.py`
+  Build script for the C extension
+
+---
+
+### Data Utilities
+
+* `download_cifar.py`, `load_cifar.py`
+  CIFAR‑10 download and preprocessing
+
+* `load_data.py`
+  MNIST loading (via `scikit‑learn`)
+
+---
+
+## Installation and Setup
 
 ### 1. Prerequisites
-Ensure you have Python 3.8+ installed. You will need the following libraries:
+
+* Python **3.8+**
+* CUDA‑enabled GPU (recommended)
+
+Install dependencies:
 
 ```bash
 pip install numpy cupy-cuda12x matplotlib scikit-learn
 ```
 
-(Note: Replace cupy-cuda12x with the version matching your CUDA installation, e.g., cupy-cuda11x)
-2. Compile the C Extension
+> 🔧 Replace `cupy-cuda12x` with the version matching your CUDA installation (e.g. `cupy-cuda11x`).
 
-The communication layer relies on a C module for performance. You must compile it before running any workers.
+---
+
+### 2. Compile the C Extension
+
+The communication backend depends on a compiled C module:
+
 ```bash
 python3 setup.py build_ext --inplace
 ```
-This will generate a shared object file (e.g., `fast_net.cpython-3x-x86_64-linux-gnu.so`) in the root directory.
 
-3. Prepare Datasets
+This generates a shared object such as:
 
-Download the required datasets before starting the training cluster.
+```
+fast_net.cpython-3x-x86_64-linux-gnu.so
+```
 
-For CIFAR-10:
+---
+
+### 3. Prepare Datasets
+
+#### CIFAR‑10
+
 ```bash
 python3 download_cifar.py
 ```
-For MNIST: The script `load_data.py` will handle downloading automatically via sklearn, but running it once ensures data is cached.
+
+#### MNIST
+
 ```bash
 python3 load_data.py
 ```
 
-🚀 How to Run
+(MNIST downloads automatically, but running once caches the data.)
 
-The system requires one Discovery Server to be running at all times. Workers connect to this server to discover their peers, form the ring topology, and then begin training.
-Step 1: Start the Discovery Server
+---
 
-Open a terminal and start the server. This acts as the rendezvous point.
+## How to Run
+
+The system requires **one discovery server** and **N workers**.
+
+---
+
+### Step 1: Start the Discovery Server
+
 ```bash
 python3 discovery_server.py
 ```
-Leave this running in the background or a separate terminal tab.
 
-Step 2: Start Workers
+Keep this running in a separate terminal.
 
-You can run workers on the same machine (for testing) or across different machines (requires network configuration). The examples below assume a single machine using different terminal windows.
-Scenario A: Deep CNN on CIFAR-10 (GPU)
+---
 
-This is the most advanced workload. It runs a Convolutional Neural Network on the GPU using `worker_cnn.py`.
+### Step 2: Start Workers
 
-Command Syntax: `python3 worker_cnn.py <rank> <world_size> <batch_size> <hidden_size> <lr> <epochs>`
+Workers can run on the same machine (testing) or across multiple machines.
 
-Example: 2-Worker Distributed Training
+---
 
-Terminal 1 (Worker 0):
+## Training Scenarios
+
+### Scenario A: CNN on CIFAR‑10 (GPU)
+
+**Command Format:**
+
+```bash
+python3 worker_cnn.py <rank> <world_size> <batch_size> <hidden_size> <lr> <epochs>
+```
+
+**Example: 2‑Worker Training**
+
+Terminal 1:
+
 ```bash
 python3 worker_cnn.py 0 2 128 256 0.001 10
 ```
-Terminal 2 (Worker 1):
+
+Terminal 2:
+
 ```bash
 python3 worker_cnn.py 1 2 128 256 0.001 10
 ```
 
-Scenario B: Linear Model on MNIST (GPU)
+---
 
-Use this to test GPU acceleration and synchronization on a simpler dataset (MNIST) without the complexity of CNN layers.
+### Scenario B: Linear Model on MNIST (GPU)
 
-Command Syntax: `python3 allreduce_worker_gpu.py <rank> <world_size> <batch_size> <hidden_size> <learning_rate>`
+```bash
+python3 allreduce_worker_gpu.py <rank> <world_size> <batch_size> <hidden_size> <lr>
+```
 
-Example: 2-Worker Distributed Training
+**Example:**
 
 Terminal 1:
+
 ```bash
 python3 allreduce_worker_gpu.py 0 2 2048 128 0.5
 ```
+
 Terminal 2:
+
 ```bash
 python3 allreduce_worker_gpu.py 1 2 2048 128 0.5
 ```
 
-Scenario C: Linear Model on MNIST (CPU)
+---
 
-Use this for basic debugging of the ring communication logic if no GPU is available.
+### Scenario C: Linear Model on MNIST (CPU)
 
-Command Syntax: python3 allreduce_worker.py <rank> <world_size>
+Useful for debugging communication logic.
 
-Example: 3-Worker Distributed Training
+```bash
+python3 allreduce_worker.py <rank> <world_size>
+```
 
-    Terminal 1: python3 allreduce_worker.py 0 3
+**Example: 3 Workers**
 
-    Terminal 2: python3 allreduce_worker.py 1 3
+```bash
+python3 allreduce_worker.py 0 3
+python3 allreduce_worker.py 1 3
+python3 allreduce_worker.py 2 3
+```
 
-    Terminal 3: python3 allreduce_worker.py 2 3
+---
 
-🧠 Technical Details
-Ring-AllReduce Implementation
+## Technical Details
 
-The synchronization happens in two phases:
+### Ring-AllReduce Algorithm
 
-    Scatter-Reduce: The gradient vector is partitioned into N chunks (where N is the number of workers). Workers pass chunks to their right neighbor and add received values to their local buffer. After N−1 steps, every worker holds a fully reduced (summed) portion of the gradient.
+The synchronization proceeds in **two phases**:
 
-    All-Gather: Workers pass the fully reduced chunks around the ring again. After N−1 steps, all workers have the complete, averaged gradient vector.
+1. **Scatter‑Reduce**
 
-Networking Optimization
+   * Gradients are split into *N chunks* (N = number of workers)
+   * Each worker sends and accumulates chunks from its neighbor
+   * After *N−1 steps*, each worker owns one fully reduced chunk
 
-The fast_net C-module allows the Python application to pass a list of Numpy arrays directly to the C layer. The C code handles the buffer iteration and socket transmission (send/recv), avoiding the overhead of concatenating arrays in Python or looping through Python objects during the critical communication path.
-Mixed Precision Strategy (worker_cnn.py)
+2. **All‑Gather**
 
-To optimize memory usage and speed on the GPU:
+   * Reduced chunks are circulated again
+   * After *N−1 steps*, all workers reconstruct the full averaged gradient
 
-    Storage: Weights and activations are stored in float16.
+---
 
-    Master Weights: A copy of weights is kept in float32 within the MasterNode class for optimizer updates.
+### Networking Optimization
 
-    Loss Scaling: A dynamic scaler starts at 216. If Inf or NaN values are detected in gradients, the step is skipped and the scaler is halved. If gradients are stable for 2000 iterations, the scaler is doubled.
+The `fast_net` C module:
+
+* Accepts raw NumPy / CuPy buffers
+* Performs direct `send/recv` operations
+* Avoids Python‑level loops and buffer concatenation
+
+This significantly reduces latency in the critical communication path.
+
+---
+
+### Mixed-Precision Strategy (`worker_cnn.py`)
+
+* **Storage:** FP16 weights and activations
+* **Master Weights:** FP32 copy for optimizer updates
+* **Loss Scaling:**
+
+  * Initial scale: `2^16`
+  * Halved on NaN/Inf detection
+  * Doubled after 2000 stable iterations
+
+This balances **speed**, **memory efficiency**, and **numerical stability**.
+
+---
+
+## Summary
+
+This project demonstrates how modern distributed deep learning systems can be built **from first principles**, combining:
+
+* Custom autograd‑free neural networks
+* Efficient GPU computation
+* Low‑level networking
+* Decentralized synchronization algorithms
+
+Ideal for **learning**, **research**, and **systems‑level experimentation** in distributed ML.
