@@ -2,222 +2,251 @@ import sys
 import time
 import numpy as np
 import cupy as cp
-import gc  # <--- Απαραίτητο για τον καθαρισμό μνήμης
+import gc
 
-# --- IMPORTS ---
 from distributed import RingAllReducer
 from load_cifar import load_cifar10
-from core_cnn import Conv2d, MaxPool2d, Flatten
-from core_gpu import LinearGPU, ReLUGPU, CrossEntropyLossGPU, SGD_GPU
+from core_cnn import Conv2d, MaxPool2d, Flatten, GlobalAvgPool2d, BatchNorm2d, Dropout
+from core_gpu import LinearGPU, ReLUGPU, CrossEntropyLossGPU, AdamW_GPU
+
+def augment_batch(X_batch):
+    """Performs random horizontal flips and translations on the GPU."""
+    do_flip = cp.random.rand(X_batch.shape[0]) > 0.5
+    X_batch[do_flip] = cp.flip(X_batch[do_flip], axis=3)
+    
+    dx = int(cp.random.randint(-4, 5)) 
+    dy = int(cp.random.randint(-4, 5))
+    X_batch = cp.roll(X_batch, shift=(dy, dx), axis=(2, 3))
+    
+    if dx > 0: X_batch[:, :, :, :dx] = 0.0
+    elif dx < 0: X_batch[:, :, :, dx:] = 0.0
+    if dy > 0: X_batch[:, :, :dy, :] = 0.0
+    elif dy < 0: X_batch[:, :, dy:, :] = 0.0
+    
+    return X_batch
+
+class MasterNode:
+    """Manages FP32 master weights for Mixed Precision training."""
+    def __init__(self, layer, name="Layer"):
+        self.layer = layer
+        self.name = name
+        self.weights = None
+        self.biases = None
+        self.d_weights = None
+        self.d_biases = None
+        if hasattr(layer, 'weights'):
+            self.weights = layer.weights.astype(cp.float32)
+            self.d_weights = cp.zeros_like(self.weights)
+        if hasattr(layer, 'biases'):
+            self.biases = layer.biases.astype(cp.float32)
+            self.d_biases = cp.zeros_like(self.biases)
+
+    def sync_to_model(self):
+        # Downcast FP32 master weights to FP16 for the forward/backward pass
+        if self.weights is not None:
+            self.layer.weights[:] = self.weights.astype(cp.float16)
+        if self.biases is not None:
+            self.layer.biases[:] = self.biases.astype(cp.float16)
+
+    def accumulate_grads(self, scaler):
+        # Unscale gradients and check for numerical overflow (Inf/NaN)
+        has_overflow = False
+        def process_tensor(grad_fp16, shape_ref):
+            if cp.any(cp.isinf(grad_fp16)) or cp.any(cp.isnan(grad_fp16)):
+                return True, cp.zeros_like(shape_ref)
+            return False, grad_fp16.astype(cp.float32) / scaler
+
+        if self.weights is not None:
+            is_inf, res = process_tensor(self.layer.d_weights, self.weights)
+            self.d_weights = res 
+            if is_inf: has_overflow = True
+        
+        if self.biases is not None:
+            is_inf, res = process_tensor(self.layer.d_biases, self.biases)
+            self.d_biases = res 
+            if is_inf: has_overflow = True   
+        return has_overflow
 
 def main(rank, world_size, batch_size, hidden_size, learning_rate, epochs):
-    # --- 1. SETUP DATA ---
     print(f"[Node {rank}] Loading CIFAR-10...")
     X_train_all, y_train_all, X_test, y_test = load_cifar10()
     
-    # Ανακάτεμα (Shuffling)
+    # Shuffle and partition data for distributed training
     indices = np.arange(X_train_all.shape[0])
     np.random.seed(42); np.random.shuffle(indices)
     X_train_all = X_train_all[indices]
     y_train_all = y_train_all[indices]
 
-    # Μοιρασιά (Sharding)
     num_samples = X_train_all.shape[0]
     samples_per_node = num_samples // world_size
-    start = rank * samples_per_node
-    end = start + samples_per_node
+    start = rank * samples_per_node; end = start + samples_per_node
     
-    X_train = X_train_all[start:end]
-    y_train = y_train_all[start:end]
-    
-    # Διαγραφή του μεγάλου dataset από τη RAM
-    del X_train_all, y_train_all
-    gc.collect()
+    X_train = X_train_all[start:end]; y_train = y_train_all[start:end]
+    del X_train_all, y_train_all; gc.collect()
 
     print(f"[Node {rank}] Moving data to GPU...")
-    X_train_gpu = cp.asarray(X_train)
+    X_train_gpu = cp.asarray(X_train).astype(cp.float16) / 255.0
     y_train_gpu = cp.asarray(y_train)
-    
-    # Διαγραφή του local dataset από τη RAM (το έχουμε πλέον VRAM)
-    del X_train, y_train
-    gc.collect()
-    
-    num_batches = X_train_gpu.shape[0] // batch_size
-    print(f"[Node {rank}] Config: Batch={batch_size}, LR={learning_rate}, Epochs={epochs}")
+    del X_train, y_train; gc.collect()
 
-    # --- 2. BUILD MODEL ---
+    num_batches = X_train_gpu.shape[0] // batch_size
+    
     model = [
-        # Block 1
-        Conv2d(3, 32, 3, 1, 1), ReLUGPU(), MaxPool2d(2, 2),
-        # Block 2
-        Conv2d(32, 64, 3, 1, 1), ReLUGPU(), MaxPool2d(2, 2),
-        # Block 3
-        Conv2d(64, 128, 3, 1, 1), ReLUGPU(), MaxPool2d(2, 2),
-        # Head
-        Flatten(),
-        LinearGPU(2048, hidden_size), ReLUGPU(),
+        Conv2d(3, 32, 3, 1, 1), BatchNorm2d(32), ReLUGPU(),
+        Conv2d(32, 32, 3, 1, 1), BatchNorm2d(32), ReLUGPU(),
+        MaxPool2d(2, 2),
+        Dropout(0.1),
+        
+        Conv2d(32, 64, 3, 1, 1), BatchNorm2d(64), ReLUGPU(),
+        Conv2d(64, 64, 3, 1, 1), BatchNorm2d(64), ReLUGPU(),
+        MaxPool2d(2, 2),
+        Dropout(0.1),
+        
+        Conv2d(64, 128, 3, 1, 1), BatchNorm2d(128), ReLUGPU(),
+        Conv2d(128, 256, 3, 1, 1), BatchNorm2d(256), ReLUGPU(),
+        MaxPool2d(2, 2),
+        
+        GlobalAvgPool2d(),
+        LinearGPU(256, hidden_size), ReLUGPU(),
+        Dropout(0.1),
         LinearGPU(hidden_size, 10)
     ]
     
     loss_fn = CrossEntropyLossGPU()
-    optimizer = SGD_GPU(model, learning_rate=learning_rate)
     comm = RingAllReducer(rank, world_size)
 
-    # Helper για Flattening Gradients
-    trainable_layers = []
-    total_params = 0
-    for layer in model:
+    master_params = []
+    for i, layer in enumerate(model):
         if hasattr(layer, 'weights'):
-            trainable_layers.append(layer)
-            total_params += layer.weights.size + layer.biases.size
-            
-    print(f"[Node {rank}] Total Trainable Params: {total_params}")
+            name = "Conv1" if i == 0 else f"Layer_{i}"
+            master_params.append(MasterNode(layer, name=name))
 
-    # --- 3. TRAINING LOOP ---
-    print(f"[Node {rank}] Starting Training...")
-    
+    optimizer = AdamW_GPU(master_params, learning_rate=learning_rate, weight_decay=1e-2)
+
+    total_params = sum(mp.weights.size + (mp.biases.size if mp.biases is not None else 0) 
+                       for mp in master_params if mp.weights is not None)
+    print(f"[Node {rank}] Total Trainable Params: {total_params}")
+    print(f"[Node {rank}] Starting Training with AdamW & Manual Schedule...")
+
     total_training_start = time.time()
-    total_compute_time = 0.0
-    total_comm_time = 0.0
+    scaler = 65536.0  
+    growth_interval = 2000 
+    growth_counter = 0
 
     for epoch in range(epochs):
+        # Manual Step LR decay
+        if epoch < 15: current_lr = 1e-3
+        elif epoch < 25: current_lr = 1e-4
+        else: current_lr = 1e-5
+        
+        optimizer.learning_rate = current_lr
+        if rank == 0: print(f"\n[Epoch {epoch+1} Start] LR set to {current_lr:.1e}")
+
+        # Enable training mode (essential for BatchNorm statistics and Dropout)
+        for layer in model:
+            if hasattr(layer, 'training'): layer.training = True
+
         epoch_start = time.time()
         epoch_loss = 0.0
-        
-        # LR Decay
-        if epoch == int(epochs*0.5): optimizer.learning_rate *= 0.1
-        if epoch == int(epochs*0.8): optimizer.learning_rate *= 0.1
+        valid_batches = 0
         
         for i in range(num_batches):
-            t_comp_start = time.time()
-            
+            # Sync FP32 master weights -> FP16 model weights
+            for mp in master_params: mp.sync_to_model()
+
             s, e = i*batch_size, (i+1)*batch_size
             X_b, y_b = X_train_gpu[s:e], y_train_gpu[s:e]
+            X_b = augment_batch(cp.copy(X_b))
             
-            # Forward
+            # Forward & Backward with Loss Scaling
             out = X_b
             for layer in model: out = layer.forward(out)
             loss = loss_fn.forward(out, y_b)
-            epoch_loss += float(loss)
             
-            # Backward
             optimizer.zero_grad()
             dout = loss_fn.backward()
+            dout *= scaler 
             for layer in reversed(model): dout = layer.backward(dout)
             
-            # Flatten Gradients
-            all_grads = []
-            for layer in trainable_layers:
-                if layer.d_weights is None: layer.d_weights = cp.zeros_like(layer.weights)
-                if layer.d_biases is None: layer.d_biases = cp.zeros_like(layer.biases)
-                
-                all_grads.append(layer.d_weights.ravel())
-                all_grads.append(layer.d_biases.ravel())
+            # Check for local overflow (Inf/NaN) after unscaling
+            local_overflow = False
+            for mp in master_params:
+                if mp.accumulate_grads(scaler):
+                    local_overflow = True
             
+            # Prepare gradients for Ring AllReduce
+            all_grads = []
+            for mp in master_params:
+                if mp.d_weights is not None: all_grads.append(mp.d_weights.ravel())
+                if mp.d_biases is not None: all_grads.append(mp.d_biases.ravel())
             flat_grads = cp.concatenate(all_grads)
             
-            # Padding
+            # Pad gradients to be divisible by world_size, reduce, then reconstruct
             total_len = flat_grads.size
             padding = (world_size - (total_len % world_size)) % world_size
-            if padding > 0:
-                flat_grads = cp.pad(flat_grads, (0, padding))
+            if padding > 0: flat_grads = cp.pad(flat_grads, (0, padding))
             
-            # Split & Move to CPU
             chunks_gpu = cp.split(flat_grads, world_size)
             chunks_cpu = [c.get() for c in chunks_gpu]
-            
-            t_comp_end = time.time()
-            
-            # Communication
             res_chunks_cpu = comm.allreduce(chunks_cpu)
-            
-            t_comm_end = time.time()
-            
-            # Restore & Update
             res_flat = cp.concatenate([cp.asarray(c) for c in res_chunks_cpu])
             if padding > 0: res_flat = res_flat[:-padding]
             
-            offset = 0
-            for layer in trainable_layers:
-                w_size = layer.d_weights.size
-                layer.d_weights = res_flat[offset : offset + w_size].reshape(layer.d_weights.shape)
-                offset += w_size
+            # Dynamic Loss Scaling Logic
+            if local_overflow or cp.any(cp.isnan(res_flat)) or cp.any(cp.isinf(res_flat)):
+                 scaler /= 2.0
+                 growth_counter = 0
+            else:
+                offset = 0
+                for mp in master_params:
+                    if mp.d_weights is not None:
+                        w_size = mp.d_weights.size
+                        mp.d_weights = res_flat[offset : offset + w_size].reshape(mp.d_weights.shape)
+                        offset += w_size
+                    if mp.d_biases is not None:
+                        b_size = mp.d_biases.size
+                        mp.d_biases = res_flat[offset : offset + b_size].reshape(mp.d_biases.shape)
+                        offset += b_size
                 
-                b_size = layer.d_biases.size
-                layer.d_biases = res_flat[offset : offset + b_size].reshape(layer.d_biases.shape)
-                offset += b_size
-            
-            optimizer.step()
-            
-            # Stats
-            total_compute_time += (t_comp_end - t_comp_start)
-            total_comm_time += (t_comm_end - t_comp_end)
+                optimizer.step()
+                epoch_loss += float(loss)
+                valid_batches += 1
+                growth_counter += 1
+                if growth_counter >= growth_interval:
+                    scaler *= 2.0
+                    growth_counter = 0
             
             if i % 10 == 0 and rank == 0:
-                print(f"\rEpoch {epoch+1}: Batch {i}/{num_batches} | Loss: {float(loss):.4f}", end="")
+                print(f"\rEpoch {epoch+1}: Batch {i}/{num_batches} | Loss: {float(loss):.4f} | Scale: {scaler}", end="")
 
-        epoch_dur = time.time() - epoch_start
-        avg_loss = epoch_loss / num_batches
-        print(f"\n[Node {rank}] Epoch {epoch+1} Done. Loss: {avg_loss:.4f} | Time: {epoch_dur:.2f}s")
+        print(f"\n[Node {rank}] Epoch {epoch+1} Done. Loss: {epoch_loss / max(1, valid_batches):.4f} | Time: {time.time() - epoch_start:.2f}s")
 
-    total_time = time.time() - total_training_start
     comm.close()
 
-    # --- 4. FINAL STATS & EVALUATION ---
     if rank == 0:
-        print("\n" + "="*30)
-        print(f"TRAINING FINISHED")
-        print(f"Total Time: {total_time:.2f}s")
-        print(f"Compute Time: {total_compute_time:.2f}s ({(total_compute_time/total_time)*100:.1f}%)")
-        print(f"Comm Time:    {total_comm_time:.2f}s ({(total_comm_time/total_time)*100:.1f}%)")
-        print("="*30)
+        print(f"\nTRAINING FINISHED | Total Time: {time.time() - total_training_start:.2f}s")
         
-        print("\nCleaning up memory before Evaluation...")
+        # Cleanup before inference
+        del optimizer, comm, X_train_gpu, y_train_gpu, master_params
+        cp.get_default_memory_pool().free_all_blocks(); gc.collect()
         
-        # 1. Delete training data & optimizer to free VRAM
-        del optimizer
-        del comm
-        del X_train_gpu
-        del y_train_gpu
-        
-        # 2. Force CuPy/Python GC
-        mempool = cp.get_default_memory_pool()
-        pinned_mempool = cp.get_default_pinned_memory_pool()
-        mempool.free_all_blocks()
-        pinned_mempool.free_all_blocks()
-        gc.collect()
-        
-        print("Evaluating on Test Set...")
-        X_test_gpu = cp.asarray(X_test)
+        print("Evaluating...")
+        X_test_gpu = cp.asarray(X_test).astype(cp.float16) / 255.0
         y_test_gpu = cp.asarray(y_test)
         
-        # 3. Use small test batch size to avoid OOM
+        # Disable dropout/BN updates for inference
+        for layer in model:
+             if hasattr(layer, 'training'): layer.training = False
+
         test_batch_size = 100
-        num_test_batches = X_test.shape[0] // test_batch_size
         correct = 0
+        for i in range(X_test.shape[0] // test_batch_size):
+            s = i * test_batch_size; e = (i + 1) * test_batch_size
+            out = X_test_gpu[s:e]
+            for layer in model: out = layer.forward(out)
+            correct += cp.sum(cp.argmax(out, axis=1) == y_test_gpu[s:e])
         
-        for i in range(num_test_batches):
-            s = i * test_batch_size
-            e = (i + 1) * test_batch_size
-            
-            X_b = X_test_gpu[s:e]
-            y_b = y_test_gpu[s:e]
-            
-            out = X_b
-            for layer in model:
-                out = layer.forward(out)
-                # 4. Clear layer cache immediately to save VRAM
-                if hasattr(layer, 'x_cols'): layer.x_cols = None
-                if hasattr(layer, 'input'): layer.input = None
-            
-            preds = cp.argmax(out, axis=1)
-            correct += cp.sum(preds == y_b)
-            
-            if i % 10 == 0:
-                print(f"\rTesting: {i}/{num_test_batches}", end="")
-            
-        acc = float(correct) / X_test.shape[0]
-        print(f"\n=== FINAL CIFAR-10 ACCURACY: {acc*100:.2f}% ===")
+        print(f"\n=== FINAL ACCURACY: {float(correct) / X_test.shape[0] * 100:.2f}% ===")
 
 if __name__ == "__main__":
     if len(sys.argv) != 7:

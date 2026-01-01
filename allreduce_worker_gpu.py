@@ -25,9 +25,6 @@ DISCOVERY_PORT = 5000
 # Choose port
 BASE_PORT = 6000
 
-cnt_top = 0
-cnt_pot = 0
-
 # def send_chunk(sock, chunk_list):
 #     """Sends a list of numpy arrays as a single, raw byte buffer."""
 #     all_bytes = b''.join([arr.astype(np.float16).tobytes() for arr in chunk_list])
@@ -289,8 +286,6 @@ class RingAllReducer:
         send_queue.put(my_chunk_idx)
         
         # 3. Εκκίνηση Threads
-        # Φτιάχνουμε "φρέσκα" threads για αυτό το round.
-        # Το overhead δημιουργίας είναι αμελητέο (micro-seconds) μπροστά στην ασφάλεια που παρέχει.
         t_listen = threading.Thread(target=self._listen_task, args=(send_queue, num_steps))
         t_send = threading.Thread(target=self._sender_task, args=(send_queue, num_steps))
         
@@ -334,7 +329,7 @@ def main(rank, world_size, batch_size, hidden_size, learning_rate):
     # mix-blend the data so all workers have the same sample,
     # but the same "random" state
     indices = np.arange(X_train_all.shape[0])
-    np.random.seed(42) # Σταθερό seed για να ανακατευτούν το ίδιο σε όλους
+    np.random.seed(42)
     np.random.shuffle(indices)
     
     X_train_all = X_train_all[indices]
@@ -356,23 +351,19 @@ def main(rank, world_size, batch_size, hidden_size, learning_rate):
 
     num_train_samples = X_train.shape[0]
     
-    # ΧΡΗΣΗ ΤΟΥ batch_size ΠΟΥ ΗΡΘΕ ΑΠΟ ΤΑ ΟΡΙΣΜΑΤΑ
     num_batches = num_train_samples // batch_size
     
     print(f"[Node {rank}] Training on {num_train_samples} samples.")
     print(f"[Node {rank}] Config: Batch={batch_size}, Hidden={hidden_size}, LR={learning_rate}")
 
     # --- Build the LOCAL Model ---
-    # ΧΡΗΣΗ ΤΟΥ hidden_size
     layer1 = LinearGPU(input_size=784, output_size=hidden_size, seed=42)
     activation1 = ReLUGPU()
-    # ΧΡΗΣΗ ΤΟΥ hidden_size
     layer2 = LinearGPU(input_size=hidden_size, output_size=10, seed=42)
     loss_function = CrossEntropyLossGPU()
     
     # Each node has its own optimizer
     parameters = [layer1, layer2]
-    # ΧΡΗΣΗ ΤΟΥ learning_rate
     optimizer = SGD_GPU(parameters=parameters, learning_rate=learning_rate)
 
     # --- Connect the Ring ---
@@ -383,15 +374,10 @@ def main(rank, world_size, batch_size, hidden_size, learning_rate):
     avg2 = 0
     # --- The Training Loop ---
     for epoch in range(EPOCHS):
-        global cnt_pot
-        cnt_pot = epoch
         running_loss = 0.0
         
         for i in range(num_batches):
-            global cnt_top
-            cnt_top = i
             
-            # ΧΡΗΣΗ ΤΟΥ batch_size ΣΤΟ SLICING
             start_batch = i * batch_size
             end_batch = (i + 1) * batch_size
             
@@ -433,10 +419,6 @@ def main(rank, world_size, batch_size, hidden_size, learning_rate):
             layer1.d_biases = cp.asarray(avg_gradients_cpu[1])
             layer2.d_weights = cp.asarray(avg_gradients_cpu[2])
             layer2.d_biases = cp.asarray(avg_gradients_cpu[3])
-
-            # Αφαιρέσαμε το hash print για ταχύτητα, αλλά αν θες βάλτο ξανά
-            # avg_grad_hash = hash_list_of_arrays(avg_gradients_cpu)
-            # print(f"[Node {rank}] Iter {i}, Avg Grad Hash: {avg_grad_hash}")
             
             # --- 4. UPDATE WEIGHTS ---
             optimizer.step()
@@ -466,7 +448,6 @@ def main(rank, world_size, batch_size, hidden_size, learning_rate):
         print(f"Elapsed time: {end - start:.6f} seconds")
 
 if __name__ == "__main__":
-    # Έλεγχος αν έχουμε τουλάχιστον 6 ορίσματα (όνομα script + 5 παράμετροι)
     if len(sys.argv) != 6:
         print("Usage: python3 allreduce_worker.py <rank> <world_size> <batch_size> <hidden_size> <learning_rate>")
         print("Example: python3 allreduce_worker.py 0 3 2048 128 0.5")

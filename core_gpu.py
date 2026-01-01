@@ -96,3 +96,72 @@ class SGD_GPU:
             if hasattr(layer, 'weights'):
                 layer.d_weights = None
                 layer.d_biases = None
+
+class AdamW_GPU:
+    def __init__(self, master_params, learning_rate=1e-3, beta1=0.9, beta2=0.999, epsilon=1e-8, weight_decay=1e-2):
+        self.master_params = master_params
+        self.learning_rate = learning_rate
+        self.beta1 = beta1
+        self.beta2 = beta2
+        self.epsilon = epsilon
+        self.weight_decay = weight_decay
+        self.t = 0
+        
+        self.m = {} 
+        self.v = {}
+        
+        for mp in self.master_params:
+            if mp.weights is not None:
+                self.m[id(mp.weights)] = cp.zeros_like(mp.weights)
+                self.v[id(mp.weights)] = cp.zeros_like(mp.weights)
+            if mp.biases is not None:
+                self.m[id(mp.biases)] = cp.zeros_like(mp.biases)
+                self.v[id(mp.biases)] = cp.zeros_like(mp.biases)
+
+    def zero_grad(self):
+        for mp in self.master_params:
+            if mp.weights is not None: mp.d_weights.fill(0)
+            if mp.biases is not None: mp.d_biases.fill(0)
+
+    def step(self):
+        self.t += 1
+        lr = self.learning_rate
+        
+        for mp in self.master_params:
+            # --- Weights Update ---
+            if mp.weights is not None:
+                grad = mp.d_weights
+                
+                # Get moments
+                m = self.m[id(mp.weights)]
+                v = self.v[id(mp.weights)]
+                
+                # Adam Logic
+                m[:] = self.beta1 * m + (1 - self.beta1) * grad
+                v[:] = self.beta2 * v + (1 - self.beta2) * (grad ** 2)
+                
+                m_hat = m / (1 - self.beta1 ** self.t)
+                v_hat = v / (1 - self.beta2 ** self.t)
+                
+                # AdamW: Decoupled Weight Decay
+                # 1. Standard Adam Update
+                update = lr * m_hat / (cp.sqrt(v_hat) + self.epsilon)
+                mp.weights -= update
+                
+                # 2. Weight Decay (applied directly to weights, scaled by LR)
+                if self.weight_decay > 0:
+                    mp.weights -= lr * self.weight_decay * mp.weights
+
+            # --- Biases Update (Usually no weight decay on biases) ---
+            if mp.biases is not None:
+                grad = mp.d_biases
+                m = self.m[id(mp.biases)]
+                v = self.v[id(mp.biases)]
+                
+                m[:] = self.beta1 * m + (1 - self.beta1) * grad
+                v[:] = self.beta2 * v + (1 - self.beta2) * (grad ** 2)
+                
+                m_hat = m / (1 - self.beta1 ** self.t)
+                v_hat = v / (1 - self.beta2 ** self.t)
+                
+                mp.biases -= lr * m_hat / (cp.sqrt(v_hat) + self.epsilon)
