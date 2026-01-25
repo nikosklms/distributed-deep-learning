@@ -49,8 +49,8 @@ def load_cifar10():
     
     # Μετατροπή σε float16 (για ταχύτητα και μνήμη, όπως κάναμε στο MNIST)
     # Διαιρούμε με 255.0 για να πάνε οι τιμές στο [0, 1]
-    X_train = (X_train / 255.0).astype(np.float16)
-    X_test = (X_test / 255.0).astype(np.float16)
+    X_train = X_train.astype(np.uint8) 
+    X_test = X_test.astype(np.uint8)
     
     # Τα labels πρέπει να είναι int32 ή int64 για το CrossEntropy
     y_train = y_train.astype(np.int32)
