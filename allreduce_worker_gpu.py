@@ -151,7 +151,6 @@ class RingAllReducer:
         self.world_size = world_size
 
         # --- 1. Discovery & Setup ---
-        # Βρίσκουμε την τοπική IP
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
             s.connect(("8.8.8.8", 80))
@@ -164,53 +163,57 @@ class RingAllReducer:
         
         print(f"[Node {self.rank}] Setup: Listening on {local_ip}:{self.listen_port}")
 
-        # Συνδεόμαστε στον Discovery Server
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.connect((DISCOVERY_IP, DISCOVERY_PORT))
             s.sendall(pickle.dumps(self.my_info))
             data = s.recv(4096)
             all_clients = pickle.loads(data)
 
-        # Ταξινόμηση και εύρεση γειτόνων
         all_clients.sort(key=lambda x: x["rank"])
         my_index = next(i for i, c in enumerate(all_clients) if c["rank"] == self.rank)
         
         self.right_neighbor = all_clients[(my_index + 1) % world_size]
-        # (Ο αριστερός γείτονας δεν χρειάζεται ως info, απλά δεχόμαστε σύνδεση από αυτόν)
 
         # --- 2. Permanent Connection Establishment ---
-        # Ανοίγουμε τα sockets ΜΙΑ φορά στην αρχή για να γλιτώσουμε χρόνο αργότερα.
-        
-        # A. Listener Socket (Server)
         self.server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.server_sock.bind((local_ip, self.listen_port))
         self.server_sock.listen(1)
         
-        # B. Connection Logic (Async για αποφυγή Deadlock)
-        # Ξεκινάμε thread να συνδεθεί στον δεξιά, ενώ εμείς περιμένουμε τον αριστερά.
         self.sender_sock = None
         self.listener_sock = None
         
         connect_thread = threading.Thread(target=self._connect_to_right)
         connect_thread.start()
         
-        # Περιμένουμε τον αριστερό να συνδεθεί σε εμάς
         print(f"[Node {self.rank}] Waiting for left neighbor...")
         conn, addr = self.server_sock.accept()
-        conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1) # Σημαντικό για speed
+        conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         self.listener_sock = conn
         print(f"[Node {self.rank}] Accepted connection from {addr}")
         
-        # Περιμένουμε να ολοκληρωθεί και η δική μας σύνδεση στον δεξιά
         connect_thread.join()
         print(f"[Node {self.rank}] Ring established!")
 
-        # State για το AllReduce
+        # --- 3. State για Persistent Threads (ΜΟΝΟ ΑΥΤΑ ΠΡΟΣΤΕΘΗΚΑΝ) ---
         self.chunks = []
+        self.send_queue = queue.Queue()
+        self.num_steps = 0
+        
+        self.start_event = threading.Event()
+        self.done_barrier = threading.Barrier(3)
+        self.stop_flag = False
+        
+        # --- 4. Δημιουργία Persistent Threads (ΜΟΝΟ ΑΥΤΑ ΠΡΟΣΤΕΘΗΚΑΝ) ---
+        self.listener_thread = threading.Thread(target=self._listen_loop, daemon=True)
+        self.sender_thread = threading.Thread(target=self._sender_loop, daemon=True)
+        
+        self.listener_thread.start()
+        self.sender_thread.start()
+        
+        print(f"[Node {self.rank}] Persistent threads started!")
 
     def _connect_to_right(self):
-        """Προσπαθεί επίμονα να συνδεθεί στον δεξιά γείτονα."""
         target_ip = self.right_neighbor["ip"]
         target_port = self.right_neighbor["port"]
         
@@ -224,90 +227,89 @@ class RingAllReducer:
                 print(f"[Node {self.rank}] Connected to right neighbor {target_ip}:{target_port}")
                 break
             except ConnectionRefusedError:
-                # Ο γείτονας δεν έχει σηκώσει ακόμα το server socket, περιμένουμε λίγο
                 time.sleep(0.1)
 
-    def _listen_task(self, send_queue, num_steps):
-        """
-        Thread που ακούει δεδομένα.
-        Μόλις λάβει και επεξεργαστεί ένα κομμάτι, ενημερώνει την ουρά 
-        ότι 'το τάδε κομμάτι είναι έτοιμο να σταλεί στον επόμενο'.
-        """
-        for step in range(2 * num_steps - 2):
-            # Υπολογισμός: Ποιο κομμάτι (chunk index) περιμένουμε σε αυτό το βήμα;
-            # Στο Ring-AllReduce τα chunks έρχονται ανάποδα από τη φορά του ρολογιού.
-            recv_chunk_idx = (self.rank - step - 1) % self.world_size
+    # ΜΟΝΟ ΤΟ WHILE LOOP ΠΡΟΣΤΕΘΗΚΕ - Η ΛΟΓΙΚΗ ΜΕΣΑ ΕΙΝΑΙ Η ΙΔΙΑ
+    def _listen_loop(self):
+        while not self.stop_flag:
+            self.start_event.wait()
+            if self.stop_flag:
+                break
             
-            # 1. Λήψη (Blocking C call - High Performance)
-            # Χρειαζόμαστε το template για να ξέρει η C πόσα bytes να περιμένει
-            template = self.chunks[recv_chunk_idx]
-            received_data = recv_and_unpack(self.listener_sock, template)
+            # --- ΑΚΡΙΒΩΣ Ο ΙΔΙΟΣ ΚΩΔΙΚΑΣ ΑΠΟ ΠΡΙΝ ---
+            for step in range(2 * self.num_steps - 2):
+                recv_chunk_idx = (self.rank - step - 1) % self.world_size
+                
+                template = self.chunks[recv_chunk_idx]
+                received_data = recv_and_unpack(self.listener_sock, template)
+                
+                if step < self.num_steps - 1:
+                    for i in range(len(self.chunks[recv_chunk_idx])):
+                        self.chunks[recv_chunk_idx][i] += received_data[i]
+                else:
+                    self.chunks[recv_chunk_idx] = received_data
+                
+                self.send_queue.put(recv_chunk_idx)
+            # --- ΤΕΛΟΣ ΙΔΙΟΥ ΚΩΔΙΚΑ ---
             
-            # 2. Επεξεργασία (Compute)
-            if step < num_steps - 1:
-                # Φάση Scatter-Reduce: Προσθέτουμε τα gradients
-                for i in range(len(self.chunks[recv_chunk_idx])):
-                    self.chunks[recv_chunk_idx][i] += received_data[i]
-            else:
-                # Φάση All-Gather: Αντικαθιστούμε (λαμβάνουμε το τελικό άθροισμα)
-                self.chunks[recv_chunk_idx] = received_data
-            
-            # 3. Ειδοποίηση Sender
-            # "Το κομμάτι recv_chunk_idx ενημερώθηκε, στείλ' το παρακάτω!"
-            send_queue.put(recv_chunk_idx)
+            self.start_event.clear()
+            self.done_barrier.wait()
 
-    def _sender_task(self, send_queue, num_steps):
-        """
-        Thread που στέλνει δεδομένα.
-        Περιμένει εντολές από την ουρά.
-        """
-        for _ in range(2 * num_steps - 2):
-            # 1. Περιμένουμε να γίνει διαθέσιμο ένα κομμάτι (Blocking)
-            chunk_idx_to_send = send_queue.get()
+    # ΜΟΝΟ ΤΟ WHILE LOOP ΠΡΟΣΤΕΘΗΚΕ - Η ΛΟΓΙΚΗ ΜΕΣΑ ΕΙΝΑΙ Η ΙΔΙΑ
+    def _sender_loop(self):
+        while not self.stop_flag:
+            self.start_event.wait()
+            if self.stop_flag:
+                break
+                
+            # --- ΑΚΡΙΒΩΣ Ο ΙΔΙΟΣ ΚΩΔΙΚΑΣ ΑΠΟ ΠΡΙΝ ---
+            for _ in range(2 * self.num_steps - 2):
+                chunk_idx_to_send = self.send_queue.get()
+                send_chunk(self.sender_sock, self.chunks[chunk_idx_to_send])
+                self.send_queue.task_done()
+            # --- ΤΕΛΟΣ ΙΔΙΟΥ ΚΩΔΙΚΑ ---
             
-            # 2. Αποστολή (Blocking C call - High Performance)
-            send_chunk(self.sender_sock, self.chunks[chunk_idx_to_send])
-            
-            # Σηματοδοτούμε ότι τελειώσαμε
-            send_queue.task_done()
+            self.start_event.clear()
+            self.done_barrier.wait()
 
     def allreduce(self, data_list):
-        # 1. Προετοιμασία
+        # 1. Προετοιμασία (ΙΔΙΟ)
         self.chunks = chunk_list(data_list, self.world_size)
-        num_steps = self.world_size
+        self.num_steps = self.world_size
         
-        # Η ουρά επικοινωνίας μεταξύ Listener -> Sender για ΑΥΤΟΝ τον γύρο
-        send_queue = queue.Queue()
+        # ΣΗΜΑΝΤΙΚΟ: Καθαρισμός της ουράς από τυχόν υπολείμματα
+        while not self.send_queue.empty():
+            try:
+                self.send_queue.get_nowait()
+            except queue.Empty:
+                break
         
-        # 2. Kickstart (Έναρξη)
-        # Στο βήμα 0, πρέπει να στείλουμε το δικό μας κομμάτι.
-        # Το βάζουμε στην ουρά για να το πάρει ο Sender και να ξεκινήσει το ντόμινο.
+        # 2. Kickstart (ΙΔΙΟ)
         my_chunk_idx = self.rank
-        send_queue.put(my_chunk_idx)
+        self.send_queue.put(my_chunk_idx)
         
-        # 3. Εκκίνηση Threads
-        t_listen = threading.Thread(target=self._listen_task, args=(send_queue, num_steps))
-        t_send = threading.Thread(target=self._sender_task, args=(send_queue, num_steps))
+        # 3. Ξύπνα threads (ΑΝΤΙ ΓΙΑ Thread creation)
+        self.start_event.set()
         
-        t_listen.start()
-        t_send.start()
+        # 4. Περίμενε (ΑΝΤΙ ΓΙΑ join())
+        self.done_barrier.wait()
         
-        # 4. Αναμονή Τερματισμού
-        t_listen.join()
-        t_send.join()
-        
-        # 5. Ανασυγκρότηση και Μέσος Όρος
+        # 5. Ανασυγκρότηση (ΙΔΙΟ)
         averaged_gradients = []
-        
-        # Ενώνουμε τα chunks και διαιρούμε με τον αριθμό των workers (Average)
         for chunk in self.chunks:
             for arr in chunk:
-                arr /= self.world_size # In-place division (γρήγορο)
+                arr /= self.world_size
                 averaged_gradients.append(arr)
             
         return averaged_gradients
 
     def close(self):
+        self.stop_flag = True
+        self.start_event.set()
+        
+        self.listener_thread.join(timeout=2.0)
+        self.sender_thread.join(timeout=2.0)
+        
         if self.sender_sock: self.sender_sock.close()
         if self.listener_sock: self.listener_sock.close()
         self.server_sock.close()
