@@ -40,9 +40,9 @@ At its heart is a **Fault-Tolerant Ring-AllReduce** backend implemented over TCP
 
 | File | Description |
 |------|-------------|
-| `core.py` | CPU-based neural network layers (`Linear`, `ReLU`, `CrossEntropy`, `SGD`, `Adam`) |
-| `core_gpu.py` | GPU-accelerated layers and optimizers (`LinearGPU`, `ReLUGPU`, `SGD_GPU`, `AdamW_GPU`) |
-| `core_cnn.py` | CNN layers optimized for GPU (`Conv2d`, `BatchNorm2d`, `MaxPool2d`, `GlobalAvgPool2d`, `Dropout`) |
+| `core.py` | CPU-based neural network layers (`Linear`, `ReLU`, `CrossEntropy`), optimizers (`SGD`, `Adam`), and LR schedulers (`CosineAnnealingLR`, `StepLR`) |
+| `core_gpu.py` | GPU-accelerated layers (`LinearGPU`, `ReLUGPU`), optimizers (`SGD_GPU`, `AdamW_GPU`), and LR schedulers (`CosineAnnealingLR_GPU`, `StepLR_GPU`) |
+| `core_cnn.py` | CNN layers optimized for GPU (`Conv2d`, `BatchNorm2d`, `MaxPool2d`, `GlobalAvgPool2d`, `Dropout`, `Flatten`) |
 
 ---
 
