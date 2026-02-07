@@ -165,3 +165,57 @@ class AdamW_GPU:
                 v_hat = v / (1 - self.beta2 ** self.t)
                 
                 mp.biases -= lr * m_hat / (cp.sqrt(v_hat) + self.epsilon)
+
+
+class CosineAnnealingLR_GPU:
+    """Cosine annealing learning rate scheduler with optional warmup (GPU version)"""
+    
+    def __init__(self, optimizer, total_steps, warmup_steps=0, min_lr=0.0):
+        self.optimizer = optimizer
+        self.base_lr = optimizer.learning_rate
+        self.total_steps = total_steps
+        self.warmup_steps = warmup_steps
+        self.min_lr = min_lr
+        self.current_step = 0
+
+    def step(self):
+        self.current_step += 1
+        
+        if self.current_step <= self.warmup_steps:
+            # Linear warmup
+            lr = self.base_lr * (self.current_step / max(1, self.warmup_steps))
+        else:
+            # Cosine decay
+            progress = (self.current_step - self.warmup_steps) / max(1, self.total_steps - self.warmup_steps)
+            progress = min(1.0, progress)
+            lr = self.min_lr + (self.base_lr - self.min_lr) * 0.5 * (1 + np.cos(np.pi * progress))
+        
+        self.optimizer.learning_rate = lr
+        return lr
+
+    def get_lr(self):
+        return self.optimizer.learning_rate
+
+
+class StepLR_GPU:
+    """Step learning rate scheduler - decays LR by gamma at specified milestones (GPU version)"""
+    
+    def __init__(self, optimizer, milestones, gamma=0.1):
+        self.optimizer = optimizer
+        self.base_lr = optimizer.learning_rate
+        self.milestones = sorted(milestones)
+        self.gamma = gamma
+        self.current_step = 0
+
+    def step(self):
+        self.current_step += 1
+        
+        # Count how many milestones we've passed
+        num_decays = sum(1 for m in self.milestones if self.current_step >= m)
+        lr = self.base_lr * (self.gamma ** num_decays)
+        
+        self.optimizer.learning_rate = lr
+        return lr
+
+    def get_lr(self):
+        return self.optimizer.learning_rate

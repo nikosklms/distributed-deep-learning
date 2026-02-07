@@ -75,7 +75,9 @@ static PyObject* c_send_list_of_arrays(PyObject* self, PyObject* args) {
     Py_RETURN_NONE;
 }
 
-// --- ΣΥΝΑΡΤΗΣΗ RECV (Ιδια με πριν, δεν αλλάζει) ---
+// --- ΣΥΝΑΡΤΗΣΗ RECV (Fixed for socket timeouts) ---
+#include <errno.h>
+
 static PyObject* c_recv_into_array(PyObject* self, PyObject* args) {
     int sockfd;
     PyArrayObject *arr;
@@ -94,20 +96,53 @@ static PyObject* c_recv_into_array(PyObject* self, PyObject* args) {
     int error_type = 0;
 
     Py_BEGIN_ALLOW_THREADS
+    
+    // Read header with timeout retry
     while (header_received < sizeof(long)) {
         r = recv(sockfd, (char*)&msg_len + header_received, sizeof(long) - header_received, 0);
-        if (r <= 0) { error_type = 1; break; } 
-        header_received += r;
+        if (r > 0) {
+            header_received += r;
+        } else if (r == 0) {
+            // Connection closed
+            error_type = 1;
+            break;
+        } else {
+            // r < 0: check errno
+            if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+                // Timeout or interrupted - retry
+                continue;
+            } else {
+                // Real error
+                error_type = 1;
+                break;
+            }
+        }
     }
 
     if (error_type == 0) {
         if (msg_len != num_bytes) {
             error_type = 2;
         } else {
+            // Read payload with timeout retry
             while (total_received < num_bytes) {
                 r = recv(sockfd, (char*)data_ptr + total_received, num_bytes - total_received, 0);
-                if (r <= 0) { error_type = 3; break; }
-                total_received += r;
+                if (r > 0) {
+                    total_received += r;
+                } else if (r == 0) {
+                    // Connection closed
+                    error_type = 3;
+                    break;
+                } else {
+                    // r < 0: check errno
+                    if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+                        // Timeout or interrupted - retry
+                        continue;
+                    } else {
+                        // Real error
+                        error_type = 3;
+                        break;
+                    }
+                }
             }
         }
     }

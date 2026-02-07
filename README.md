@@ -1,90 +1,96 @@
 # Distributed Deep Learning Framework with Ring-AllReduce
 
-> **A high‑performance, from‑scratch distributed deep learning framework**
+A high-performance, from-scratch distributed deep learning framework implementing neural networks, optimizers, and distributed training without relying on PyTorch or TensorFlow for core logic.
 
-This project is a **custom-built deep learning framework** that implements neural networks, optimizers, and distributed training *without relying on PyTorch or TensorFlow for core logic*.
-
-At its heart is a **decentralized Ring‑AllReduce** backend implemented over **TCP sockets**, accelerated with a **C extension (`fast_net`)** for raw buffer transmission. The framework supports **GPU acceleration via CuPy** and **mixed‑precision (FP16/FP32) training**.
+At its heart is a **Fault-Tolerant Ring-AllReduce** backend implemented over TCP/UDP sockets, with GPU acceleration via CuPy and mixed-precision (FP16/FP32) training support.
 
 ---
 
 ## Key Features
 
 * **Custom Neural Network Primitives**
-  Hand‑written implementations of:
+  Implementations of:
+  * `Linear`, `ReLU`, `CrossEntropy` (CPU and GPU)
+  * `Conv2d` (strided im2col), `MaxPool2d`, `GlobalAvgPool2d`
+  * `BatchNorm2d`, `Dropout`, `Flatten`
+  * Optimizers: `SGD`, `Adam`, `AdamW`
+  * LR Schedulers: `CosineAnnealingLR`, `StepLR`
 
-  * `Linear`, `ReLU`, `CrossEntropy`
-  * `Conv2d` (strided `im2col`), `MaxPool2d`
-  * `BatchNorm2d`, `Dropout`
-
-* **Decentralized Distributed Training**
-  Fully peer‑to‑peer **Ring‑AllReduce** architecture with no parameter server.
+* **Fault-Tolerant Distributed Training**
+  Fully peer-to-peer Ring-AllReduce architecture with:
+  * Automatic checkpointing and rollback
+  * Heartbeat-based failure detection
+  * Gossip protocol for failure propagation
+  * Transparent recovery without application changes
 
 * **Hybrid Python / C Networking**
-  Performance‑critical socket communication is offloaded to a C extension (`fast_net`) to minimize Python overhead.
+  Performance-critical socket communication is offloaded to a C extension (`fast_net`) to minimize Python overhead.
 
 * **GPU Acceleration**
-  CUDA‑enabled training via **CuPy**, supporting both Linear and CNN workloads.
+  CUDA-enabled training via CuPy, supporting both Linear and CNN workloads.
 
-* **Mixed‑Precision Training**
-  FP16 weights & gradients with FP32 master weights and **dynamic loss scaling** for numerical stability.
-
-* **Discovery and Rendezvous**
-  A lightweight discovery server initializes workers before switching to direct ring communication.
+* **Mixed-Precision Training**
+  FP16 weights and gradients with FP32 master weights and dynamic loss scaling for numerical stability.
 
 ---
 
 ## Project Structure
 
-### Core Components
+### Core Neural Network Components
 
-* `core.py`
-  CPU‑based neural network layers (`Linear`, `ReLU`, `CrossEntropy`)
-
-* `core_gpu.py`
-  GPU‑accelerated layers and optimizers (`Linear`, `ReLU`, `CrossEntropy`, `AdamW`) using CuPy
-
-* `core_cnn.py`
-  Advanced CNN layers (`Conv2d`, `BatchNorm`, `Pooling`) optimized for GPU execution
+| File | Description |
+|------|-------------|
+| `core.py` | CPU-based neural network layers (`Linear`, `ReLU`, `CrossEntropy`, `SGD`, `Adam`) |
+| `core_gpu.py` | GPU-accelerated layers and optimizers (`LinearGPU`, `ReLUGPU`, `SGD_GPU`, `AdamW_GPU`) |
+| `core_cnn.py` | CNN layers optimized for GPU (`Conv2d`, `BatchNorm2d`, `MaxPool2d`, `GlobalAvgPool2d`, `Dropout`) |
 
 ---
 
-### Training Scripts (Workers)
+### Training Applications
 
-* `worker_cnn.py`
-  Distributed CNN training on **CIFAR‑10** using **AdamW** (GPU)
+| File | Description |
+|------|-------------|
+| `train_mnist.py` | Distributed MNIST training with Linear models. Supports CPU and GPU backends. |
+| `train_cifar.py` | Distributed CIFAR-10 training with CNN architecture (GPU only). Features mixed-precision training with AdamW and cosine annealing LR. |
 
-* `allreduce_worker_gpu.py`
-  Distributed **MNIST** training with Linear models (GPU, SGD)
+---
 
-* `allreduce_worker.py`
-  CPU‑based MNIST worker for debugging and validation
+### Communication Libraries
+
+| File | Description |
+|------|-------------|
+| `allreduce_cpu.py` | CPU Ring-AllReduce implementation for distributed gradient averaging. Pure Python, no GPU required. |
+| `allreduce_gpu.py` | Fault-tolerant GPU Ring-AllReduce with automatic checkpointing, failure detection, and recovery. |
+
+---
+
+### Fault Tolerance Infrastructure
+
+| File | Description |
+|------|-------------|
+| `udp_reliable.py` | Reliable UDP communication layer with acknowledgments and retries |
+| `gosip.py` | Gossip protocol for failure and recovery notification propagation |
+| `heartbeats.py` | Heartbeat monitoring for neighbor failure detection |
 
 ---
 
 ### Distributed Infrastructure
 
-* `discovery_server.py`
-  Rendezvous server for worker discovery and ring formation
-
-* `distributed.py`
-  Implements the `RingAllReducer` synchronization logic
-
-* `fast_sockets.c`
-  C extension for zero‑copy socket transmission of NumPy / CuPy buffers
-
-* `setup.py`
-  Build script for the C extension
+| File | Description |
+|------|-------------|
+| `discovery_server.py` | Rendezvous server for worker discovery and ring formation |
+| `fast_sockets.c` | C extension for zero-copy socket transmission of NumPy/CuPy buffers |
+| `setup.py` | Build script for the C extension |
 
 ---
 
 ### Data Utilities
 
-* `download_cifar.py`, `load_cifar.py`
-  CIFAR‑10 download and preprocessing
-
-* `load_data.py`
-  MNIST loading (via `scikit‑learn`)
+| File | Description |
+|------|-------------|
+| `download_cifar.py` | CIFAR-10 download and preprocessing |
+| `load_cifar.py` | CIFAR-10 data loading utilities |
+| `load_data.py` | MNIST loading (via scikit-learn) |
 
 ---
 
@@ -92,8 +98,8 @@ At its heart is a **decentralized Ring‑AllReduce** backend implemented over **
 
 ### 1. Prerequisites
 
-* Python **3.8+**
-* CUDA‑enabled GPU (recommended)
+* Python 3.8+
+* CUDA-enabled GPU (recommended for GPU backend)
 
 Install dependencies:
 
@@ -101,13 +107,13 @@ Install dependencies:
 pip install numpy cupy-cuda12x matplotlib scikit-learn
 ```
 
-> 🔧 Replace `cupy-cuda12x` with the version matching your CUDA installation (e.g. `cupy-cuda11x`).
+Replace `cupy-cuda12x` with the version matching your CUDA installation (e.g., `cupy-cuda11x`).
 
 ---
 
-### 2. Compile the C Extension
+### 2. Compile the C Extension (Optional but Recommended)
 
-The communication backend depends on a compiled C module:
+The communication backend can use an optimized C module:
 
 ```bash
 python3 setup.py build_ext --inplace
@@ -123,27 +129,23 @@ fast_net.cpython-3x-x86_64-linux-gnu.so
 
 ### 3. Prepare Datasets
 
-#### CIFAR‑10
-
+**CIFAR-10:**
 ```bash
 python3 download_cifar.py
 ```
 
-#### MNIST
-
+**MNIST:**
 ```bash
 python3 load_data.py
 ```
 
-(MNIST downloads automatically, but running once caches the data.)
+MNIST downloads automatically, but running once caches the data locally.
 
 ---
 
 ## How to Run
 
 The system requires **one discovery server** and **N workers**.
-
----
 
 ### Step 1: Start the Discovery Server
 
@@ -157,73 +159,66 @@ Keep this running in a separate terminal.
 
 ### Step 2: Start Workers
 
-Workers can run on the same machine (testing) or across multiple machines.
+Workers can run on the same machine (for testing) or across multiple machines.
 
 ---
 
-## Training Scenarios
+## Training Examples
 
-### Scenario A: CNN on CIFAR‑10 (GPU)
-
-**Command Format:**
+### MNIST Training (CPU Backend)
 
 ```bash
-python3 worker_cnn.py <rank> <world_size> <batch_size> <hidden_size> <lr> <epochs>
+# Terminal 1 - Discovery server
+python3 discovery_server.py
+
+# Terminal 2 - Worker 0
+python3 train_mnist.py 0 2 256 128 0.5 --backend cpu --epochs 3
+
+# Terminal 3 - Worker 1
+python3 train_mnist.py 1 2 256 128 0.5 --backend cpu --epochs 3
 ```
 
-**Example: 2‑Worker Training**
-
-Terminal 1:
-
-```bash
-python3 worker_cnn.py 0 2 128 256 0.001 10
-```
-
-Terminal 2:
-
-```bash
-python3 worker_cnn.py 1 2 128 256 0.001 10
-```
+**Arguments:**
+- `rank`: Node rank (0 to world_size-1)
+- `world_size`: Total number of nodes
+- `batch_size`: Batch size per node
+- `hidden_size`: Hidden layer size
+- `lr`: Learning rate
+- `--backend`: `cpu` or `gpu`
+- `--epochs`: Number of epochs
 
 ---
 
-### Scenario B: Linear Model on MNIST (GPU)
+### MNIST Training (GPU Backend with Fault Tolerance)
 
 ```bash
-python3 allreduce_worker_gpu.py <rank> <world_size> <batch_size> <hidden_size> <lr>
-```
+# Terminal 1
+python3 train_mnist.py 0 2 2048 128 0.5 --backend gpu --epochs 3
 
-**Example:**
-
-Terminal 1:
-
-```bash
-python3 allreduce_worker_gpu.py 0 2 2048 128 0.5
-```
-
-Terminal 2:
-
-```bash
-python3 allreduce_worker_gpu.py 1 2 2048 128 0.5
+# Terminal 2
+python3 train_mnist.py 1 2 2048 128 0.5 --backend gpu --epochs 3
 ```
 
 ---
 
-### Scenario C: Linear Model on MNIST (CPU)
-
-Useful for debugging communication logic.
+### CIFAR-10 CNN Training (GPU only)
 
 ```bash
-python3 allreduce_worker.py <rank> <world_size>
+# Terminal 1 - Worker 0
+python3 train_cifar.py 0 2 128 256 0.001 10 --checkpoint_interval 50
+
+# Terminal 2 - Worker 1
+python3 train_cifar.py 1 2 128 256 0.001 10 --checkpoint_interval 50
 ```
 
-**Example: 3 Workers**
-
-```bash
-python3 allreduce_worker.py 0 3
-python3 allreduce_worker.py 1 3
-python3 allreduce_worker.py 2 3
-```
+**Arguments:**
+- `rank`: Node rank
+- `world_size`: Total number of nodes
+- `batch_size`: Batch size per node
+- `hidden_size`: Fully connected hidden layer size
+- `lr`: Learning rate
+- `epochs`: Number of epochs
+- `--checkpoint_interval`: Iterations between checkpoints (default: 50)
 
 ---
 
@@ -231,54 +226,112 @@ python3 allreduce_worker.py 2 3
 
 ### Ring-AllReduce Algorithm
 
-The synchronization proceeds in **two phases**:
+The synchronization proceeds in two phases:
 
-1. **Scatter‑Reduce**
-
-   * Gradients are split into *N chunks* (N = number of workers)
+1. **Scatter-Reduce**
+   * Gradients are split into N chunks (N = number of workers)
    * Each worker sends and accumulates chunks from its neighbor
-   * After *N−1 steps*, each worker owns one fully reduced chunk
+   * After N-1 steps, each worker owns one fully reduced chunk
 
-2. **All‑Gather**
-
+2. **All-Gather**
    * Reduced chunks are circulated again
-   * After *N−1 steps*, all workers reconstruct the full averaged gradient
+   * After N-1 steps, all workers reconstruct the full averaged gradient
+
+---
+
+### Fault Tolerance Architecture
+
+The fault-tolerant ring allreduce implements:
+
+* **Checkpointing:** Periodic model state saves via callbacks
+* **Heartbeat Monitoring:** Detects neighbor failures via UDP heartbeats
+* **Gossip Protocol:** Propagates failure/recovery notifications to all nodes
+* **Automatic Recovery:**
+  1. Failure detected via heartbeat timeout
+  2. Gossip notifies all nodes to stop
+  3. All nodes rollback to last checkpoint
+  4. TCP ring reconnected with updated topology
+  5. Training resumes from checkpoint iteration
+
+Recovery is transparent to the application - the `allreduce()` call returns recovery info that the training loop uses to adjust iteration counters.
 
 ---
 
 ### Networking Optimization
 
 The `fast_net` C module:
-
-* Accepts raw NumPy / CuPy buffers
-* Performs direct `send/recv` operations
-* Avoids Python‑level loops and buffer concatenation
-
-This significantly reduces latency in the critical communication path.
+* Accepts raw NumPy/CuPy buffers
+* Performs direct send/recv operations
+* Releases the Python GIL for concurrent I/O
+* Avoids Python-level loops and buffer concatenation
 
 ---
 
-### Mixed-Precision Strategy (`worker_cnn.py`)
+### Mixed-Precision Strategy (train_cifar.py)
 
 * **Storage:** FP16 weights and activations
 * **Master Weights:** FP32 copy for optimizer updates
 * **Loss Scaling:**
-
-  * Initial scale: `2^16`
+  * Initial scale: 2^16
   * Halved on NaN/Inf detection
   * Doubled after 2000 stable iterations
 
-This balances **speed**, **memory efficiency**, and **numerical stability**.
+This balances speed, memory efficiency, and numerical stability.
+
+---
+
+## API Reference
+
+### RingAllReducer (CPU)
+
+```python
+from allreduce_cpu import RingAllReducer
+
+comm = RingAllReducer(rank=0, world_size=2, verbose=True)
+averaged_grads = comm.allreduce([grad1, grad2, grad3])
+comm.close()
+```
+
+### FaultTolerantRingAllReducer (GPU)
+
+```python
+from allreduce_gpu import FaultTolerantRingAllReducer
+
+def get_model_state():
+    return {'weights': model.weights.get(), 'biases': model.biases.get()}
+
+def set_model_state(state):
+    model.weights[:] = cp.asarray(state['weights'])
+    model.biases[:] = cp.asarray(state['biases'])
+
+comm = FaultTolerantRingAllReducer(
+    rank=0,
+    world_size=2,
+    get_model_state_fn=get_model_state,
+    set_model_state_fn=set_model_state,
+    checkpoint_interval=100,
+    verbose=True
+)
+
+# During training loop:
+averaged_grads, info = comm.allreduce([grad1, grad2, grad3])
+if info['recovered']:
+    # Handle recovery - resume from info['resume_iteration']
+    pass
+
+comm.close()
+```
 
 ---
 
 ## Summary
 
-This project demonstrates how modern distributed deep learning systems can be built **from first principles**, combining:
+This project demonstrates how modern distributed deep learning systems can be built from first principles, combining:
 
-* Custom autograd‑free neural networks
+* Custom autograd-free neural networks
 * Efficient GPU computation
-* Low‑level networking
+* Low-level networking with C extensions
 * Decentralized synchronization algorithms
+* Fault tolerance with checkpointing and recovery
 
-Ideal for **learning**, **research**, and **systems‑level experimentation** in distributed ML.
+Ideal for learning, research, and systems-level experimentation in distributed ML.

@@ -92,3 +92,111 @@ class SGD:
             if hasattr(layer, 'weights'):
                 layer.d_weights = None
                 layer.d_biases = None
+
+
+class Adam:
+    """Adam optimizer with optional weight decay (AdamW when weight_decay > 0)"""
+    
+    def __init__(self, parameters, learning_rate=1e-3, beta1=0.9, beta2=0.999, 
+                 epsilon=1e-8, weight_decay=0.0):
+        self.parameters = parameters
+        self.learning_rate = learning_rate
+        self.beta1 = beta1
+        self.beta2 = beta2
+        self.epsilon = epsilon
+        self.weight_decay = weight_decay
+        self.t = 0
+        
+        # Initialize moment estimates
+        self.m = {}
+        self.v = {}
+        for layer in self.parameters:
+            if hasattr(layer, 'weights'):
+                self.m[id(layer.weights)] = np.zeros_like(layer.weights)
+                self.v[id(layer.weights)] = np.zeros_like(layer.weights)
+                self.m[id(layer.biases)] = np.zeros_like(layer.biases)
+                self.v[id(layer.biases)] = np.zeros_like(layer.biases)
+
+    def step(self):
+        self.t += 1
+        lr = self.learning_rate
+        
+        for layer in self.parameters:
+            if hasattr(layer, 'weights'):
+                for param, grad, name in [(layer.weights, layer.d_weights, 'w'),
+                                          (layer.biases, layer.d_biases, 'b')]:
+                    m = self.m[id(param)]
+                    v = self.v[id(param)]
+                    
+                    m[:] = self.beta1 * m + (1 - self.beta1) * grad
+                    v[:] = self.beta2 * v + (1 - self.beta2) * (grad ** 2)
+                    
+                    m_hat = m / (1 - self.beta1 ** self.t)
+                    v_hat = v / (1 - self.beta2 ** self.t)
+                    
+                    update = lr * m_hat / (np.sqrt(v_hat) + self.epsilon)
+                    param -= update
+                    
+                    # Weight decay (only on weights, not biases)
+                    if self.weight_decay > 0 and name == 'w':
+                        param -= lr * self.weight_decay * param
+
+    def zero_grad(self):
+        for layer in self.parameters:
+            if hasattr(layer, 'weights'):
+                layer.d_weights = None
+                layer.d_biases = None
+
+
+class CosineAnnealingLR:
+    """Cosine annealing learning rate scheduler with optional warmup"""
+    
+    def __init__(self, optimizer, total_steps, warmup_steps=0, min_lr=0.0):
+        self.optimizer = optimizer
+        self.base_lr = optimizer.learning_rate
+        self.total_steps = total_steps
+        self.warmup_steps = warmup_steps
+        self.min_lr = min_lr
+        self.current_step = 0
+
+    def step(self):
+        self.current_step += 1
+        
+        if self.current_step <= self.warmup_steps:
+            # Linear warmup
+            lr = self.base_lr * (self.current_step / max(1, self.warmup_steps))
+        else:
+            # Cosine decay
+            progress = (self.current_step - self.warmup_steps) / max(1, self.total_steps - self.warmup_steps)
+            progress = min(1.0, progress)
+            lr = self.min_lr + (self.base_lr - self.min_lr) * 0.5 * (1 + np.cos(np.pi * progress))
+        
+        self.optimizer.learning_rate = lr
+        return lr
+
+    def get_lr(self):
+        return self.optimizer.learning_rate
+
+
+class StepLR:
+    """Step learning rate scheduler - decays LR by gamma at specified milestones"""
+    
+    def __init__(self, optimizer, milestones, gamma=0.1):
+        self.optimizer = optimizer
+        self.base_lr = optimizer.learning_rate
+        self.milestones = sorted(milestones)
+        self.gamma = gamma
+        self.current_step = 0
+
+    def step(self):
+        self.current_step += 1
+        
+        # Count how many milestones we've passed
+        num_decays = sum(1 for m in self.milestones if self.current_step >= m)
+        lr = self.base_lr * (self.gamma ** num_decays)
+        
+        self.optimizer.learning_rate = lr
+        return lr
+
+    def get_lr(self):
+        return self.optimizer.learning_rate
