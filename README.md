@@ -1,4 +1,4 @@
-# Distributed Deep Learning Framework with Ring-AllReduce
+# Distributed Deep Learning Framework
 
 A high-performance, from-scratch distributed deep learning framework implementing neural networks, optimizers, and distributed training without relying on PyTorch or TensorFlow for core logic.
 
