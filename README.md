@@ -4,6 +4,9 @@ A high-performance, from-scratch distributed deep learning framework implementin
 
 At its heart is a **Fault-Tolerant Ring-AllReduce** backend implemented over TCP/UDP sockets, with GPU acceleration via CuPy and mixed-precision (FP16/FP32) training support.
 
+![Ring-AllReduce](ring.png)
+*The Ring-AllReduce algorithm*
+
 ---
 
 ## Key Features
@@ -22,9 +25,6 @@ At its heart is a **Fault-Tolerant Ring-AllReduce** backend implemented over TCP
   * Heartbeat-based failure detection
   * Gossip protocol for failure propagation
   * Transparent recovery without application changes
-
-![Ring-AllReduce](ring.png)
-*The Ring-AllReduce algorithm*
 
 * **Hybrid Python / C Networking**
   Performance-critical socket communication is offloaded to a C extension (`fast_net`) to minimize Python overhead.
