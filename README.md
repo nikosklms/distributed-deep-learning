@@ -324,17 +324,3 @@ if info['recovered']:
 
 comm.close()
 ```
-
----
-
-## Summary
-
-This project demonstrates how modern distributed deep learning systems can be built from first principles, combining:
-
-* Custom autograd-free neural networks
-* Efficient GPU computation
-* Low-level networking with C extensions
-* Decentralized synchronization algorithms
-* Fault tolerance with checkpointing and recovery
-
-Ideal for learning, research, and systems-level experimentation in distributed ML.
