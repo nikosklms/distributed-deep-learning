@@ -4,7 +4,7 @@
 
 import threading
 import time
-from udp_reliable import ReliableUDP, MessageType
+from comms.udp_reliable import ReliableUDP, MessageType
 
 class HeartbeatMonitor:
     """

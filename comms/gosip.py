@@ -5,7 +5,7 @@
 import threading
 import time
 from enum import IntEnum
-from udp_reliable import ReliableUDP, MessageType
+from comms.udp_reliable import ReliableUDP, MessageType
 
 class GossipMessageType(IntEnum):
     """Gossip-specific message types (extends MessageType)"""

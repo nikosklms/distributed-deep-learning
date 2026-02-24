@@ -40,9 +40,9 @@ At its heart is a **Fault-Tolerant Ring-AllReduce** backend implemented over TCP
 
 | File | Description |
 |------|-------------|
-| `core.py` | CPU-based neural network layers (`Linear`, `ReLU`, `CrossEntropy`), optimizers (`SGD`, `Adam`), and LR schedulers (`CosineAnnealingLR`, `StepLR`) |
-| `core_gpu.py` | GPU-accelerated layers (`LinearGPU`, `ReLUGPU`), optimizers (`SGD_GPU`, `AdamW_GPU`), and LR schedulers (`CosineAnnealingLR_GPU`, `StepLR_GPU`) |
-| `core_cnn.py` | CNN layers optimized for GPU (`Conv2d`, `BatchNorm2d`, `MaxPool2d`, `GlobalAvgPool2d`, `Dropout`, `Flatten`) |
+| `core/core.py` | CPU-based neural network layers (`Linear`, `ReLU`, `CrossEntropy`), optimizers (`SGD`, `Adam`), and LR schedulers (`CosineAnnealingLR`, `StepLR`) |
+| `core/core_gpu.py` | GPU-accelerated layers (`LinearGPU`, `ReLUGPU`), optimizers (`SGD_GPU`, `AdamW_GPU`), and LR schedulers (`CosineAnnealingLR_GPU`, `StepLR_GPU`) |
+| `core/core_cnn.py` | CNN layers optimized for GPU (`Conv2d`, `BatchNorm2d`, `MaxPool2d`, `GlobalAvgPool2d`, `Dropout`, `Flatten`) |
 
 ---
 
@@ -50,8 +50,8 @@ At its heart is a **Fault-Tolerant Ring-AllReduce** backend implemented over TCP
 
 | File | Description |
 |------|-------------|
-| `train_mnist.py` | Distributed MNIST training with Linear models. Supports CPU and GPU backends. |
-| `train_cifar.py` | Distributed CIFAR-10 training with CNN architecture (GPU only). Features mixed-precision training with AdamW and cosine annealing LR. |
+| `apps/train_mnist.py` | Distributed MNIST training with Linear models. Supports CPU and GPU backends. |
+| `apps/train_cifar.py` | Distributed CIFAR-10 training with CNN architecture (GPU only). Features mixed-precision training with AdamW and cosine annealing LR. |
 
 ---
 
@@ -59,8 +59,8 @@ At its heart is a **Fault-Tolerant Ring-AllReduce** backend implemented over TCP
 
 | File | Description |
 |------|-------------|
-| `allreduce_cpu.py` | CPU Ring-AllReduce implementation for distributed gradient averaging. Pure Python, no GPU required. |
-| `allreduce_gpu.py` | Fault-tolerant GPU Ring-AllReduce with automatic checkpointing, failure detection, and recovery. |
+| `comms/allreduce_cpu.py` | CPU Ring-AllReduce implementation for distributed gradient averaging. Pure Python, no GPU required. |
+| `comms/allreduce_gpu.py` | Fault-tolerant GPU Ring-AllReduce with automatic checkpointing, failure detection, and recovery. |
 
 ---
 
@@ -68,9 +68,9 @@ At its heart is a **Fault-Tolerant Ring-AllReduce** backend implemented over TCP
 
 | File | Description |
 |------|-------------|
-| `udp_reliable.py` | Reliable UDP communication layer with acknowledgments and retries |
-| `gosip.py` | Gossip protocol for failure and recovery notification propagation |
-| `heartbeats.py` | Heartbeat monitoring for neighbor failure detection |
+| `comms/udp_reliable.py` | Reliable UDP communication layer with acknowledgments and retries |
+| `comms/gosip.py` | Gossip protocol for failure and recovery notification propagation |
+| `comms/heartbeats.py` | Heartbeat monitoring for neighbor failure detection |
 
 ---
 
@@ -78,9 +78,9 @@ At its heart is a **Fault-Tolerant Ring-AllReduce** backend implemented over TCP
 
 | File | Description |
 |------|-------------|
-| `discovery_server.py` | Rendezvous server for worker discovery and ring formation |
-| `fast_sockets.c` | C extension for zero-copy socket transmission of NumPy/CuPy buffers |
-| `setup.py` | Build script for the C extension |
+| `comms/discovery_server.py` | Rendezvous server for worker discovery and ring formation |
+| `comms/fast_sockets.c` | C extension for zero-copy socket transmission of NumPy/CuPy buffers |
+| `comms/setup.py` | Build script for the C extension |
 
 ---
 
@@ -88,9 +88,9 @@ At its heart is a **Fault-Tolerant Ring-AllReduce** backend implemented over TCP
 
 | File | Description |
 |------|-------------|
-| `download_cifar.py` | CIFAR-10 download and preprocessing |
-| `load_cifar.py` | CIFAR-10 data loading utilities |
-| `load_data.py` | MNIST loading (via scikit-learn) |
+| `datasets/download_cifar.py` | CIFAR-10 download and preprocessing |
+| `datasets/load_cifar.py` | CIFAR-10 data loading utilities |
+| `datasets/load_data.py` | MNIST loading (via scikit-learn) |
 
 ---
 
@@ -116,7 +116,7 @@ Replace `cupy-cuda12x` with the version matching your CUDA installation (e.g., `
 The communication backend can use an optimized C module:
 
 ```bash
-python3 setup.py build_ext --inplace
+python3 comms/setup.py build_ext --inplace
 ```
 
 This generates a shared object such as:
@@ -131,12 +131,12 @@ fast_net.cpython-3x-x86_64-linux-gnu.so
 
 **CIFAR-10:**
 ```bash
-python3 download_cifar.py
+python3 datasets/download_cifar.py
 ```
 
 **MNIST:**
 ```bash
-python3 load_data.py
+python3 datasets/load_data.py
 ```
 
 MNIST downloads automatically, but running once caches the data locally.
@@ -150,7 +150,7 @@ The system requires **one discovery server** and **N workers**.
 ### Step 1: Start the Discovery Server
 
 ```bash
-python3 discovery_server.py
+python3 comms/discovery_server.py
 ```
 
 Keep this running in a separate terminal.
@@ -169,13 +169,13 @@ Workers can run on the same machine (for testing) or across multiple machines.
 
 ```bash
 # Terminal 1 - Discovery server
-python3 discovery_server.py
+python3 comms/discovery_server.py
 
 # Terminal 2 - Worker 0
-python3 train_mnist.py 0 2 256 128 0.5 --backend cpu --epochs 3
+python3 apps/train_mnist.py 0 2 256 128 0.5 --backend cpu --epochs 3
 
 # Terminal 3 - Worker 1
-python3 train_mnist.py 1 2 256 128 0.5 --backend cpu --epochs 3
+python3 apps/train_mnist.py 1 2 256 128 0.5 --backend cpu --epochs 3
 ```
 
 **Arguments:**
@@ -193,10 +193,10 @@ python3 train_mnist.py 1 2 256 128 0.5 --backend cpu --epochs 3
 
 ```bash
 # Terminal 1
-python3 train_mnist.py 0 2 2048 128 0.5 --backend gpu --epochs 3
+python3 apps/train_mnist.py 0 2 2048 128 0.5 --backend gpu --epochs 3
 
 # Terminal 2
-python3 train_mnist.py 1 2 2048 128 0.5 --backend gpu --epochs 3
+python3 apps/train_mnist.py 1 2 2048 128 0.5 --backend gpu --epochs 3
 ```
 
 ---
@@ -205,10 +205,10 @@ python3 train_mnist.py 1 2 2048 128 0.5 --backend gpu --epochs 3
 
 ```bash
 # Terminal 1 - Worker 0
-python3 train_cifar.py 0 2 128 256 0.001 10 --checkpoint_interval 50
+python3 apps/train_cifar.py 0 2 128 256 0.001 10 --checkpoint_interval 50
 
 # Terminal 2 - Worker 1
-python3 train_cifar.py 1 2 128 256 0.001 10 --checkpoint_interval 50
+python3 apps/train_cifar.py 1 2 128 256 0.001 10 --checkpoint_interval 50
 ```
 
 **Arguments:**
@@ -285,7 +285,7 @@ This balances speed, memory efficiency, and numerical stability.
 ### RingAllReducer (CPU)
 
 ```python
-from allreduce_cpu import RingAllReducer
+from comms.allreduce_cpu import RingAllReducer
 
 comm = RingAllReducer(rank=0, world_size=2, verbose=True)
 averaged_grads = comm.allreduce([grad1, grad2, grad3])
@@ -295,7 +295,7 @@ comm.close()
 ### FaultTolerantRingAllReducer (GPU)
 
 ```python
-from allreduce_gpu import FaultTolerantRingAllReducer
+from comms.allreduce_gpu import FaultTolerantRingAllReducer
 
 def get_model_state():
     return {'weights': model.weights.get(), 'biases': model.biases.get()}
