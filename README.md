@@ -5,7 +5,7 @@ A high-performance, from-scratch distributed deep learning framework implementin
 At its heart is a **Fault-Tolerant Ring-AllReduce** backend implemented over TCP/UDP sockets, with GPU acceleration via CuPy and mixed-precision (FP16/FP32) training support.
 
 ![Ring-AllReduce](ring.png)
-*The Ring-AllReduce algorithm*
+*[The Ring-AllReduce algorithm](https://medium.com/data-science/visual-intuition-on-ring-allreduce-for-distributed-deep-learning-d1f34b4911da)*
 
 ---
 
@@ -324,12 +324,6 @@ if info['recovered']:
 
 comm.close()
 ```
-
----
-
-## References
-
-* [Visual Intuition on Ring-AllReduce for Distributed Deep Learning](https://medium.com/data-science/visual-intuition-on-ring-allreduce-for-distributed-deep-learning-d1f34b4911da)
 
 ---
 
