@@ -23,6 +23,9 @@ At its heart is a **Fault-Tolerant Ring-AllReduce** backend implemented over TCP
   * Gossip protocol for failure propagation
   * Transparent recovery without application changes
 
+![Ring-AllReduce](ring.png)
+*The Ring-AllReduce algorithm*
+
 * **Hybrid Python / C Networking**
   Performance-critical socket communication is offloaded to a C extension (`fast_net`) to minimize Python overhead.
 
@@ -321,6 +324,12 @@ if info['recovered']:
 
 comm.close()
 ```
+
+---
+
+## References
+
+* [Visual Intuition on Ring-AllReduce for Distributed Deep Learning](https://medium.com/data-science/visual-intuition-on-ring-allreduce-for-distributed-deep-learning-d1f34b4911da)
 
 ---
 
