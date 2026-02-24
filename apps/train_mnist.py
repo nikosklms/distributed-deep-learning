@@ -13,7 +13,7 @@ import time
 import numpy as np
 import os
 
-from load_data import load_mnist
+from datasets.load_data import load_mnist
 
 def log(rank, msg, **kwargs):
     timestamp = time.strftime("%H:%M:%S")
@@ -48,8 +48,8 @@ def main():
     if backend == 'gpu':
         try:
             import cupy as cp
-            from core_gpu import LinearGPU, ReLUGPU, CrossEntropyLossGPU, SGD_GPU
-            from allreduce_gpu import FaultTolerantRingAllReducer
+            from core.core_gpu import LinearGPU, ReLUGPU, CrossEntropyLossGPU, SGD_GPU
+            from comms.allreduce_gpu import FaultTolerantRingAllReducer
             xp = cp
             Linear = LinearGPU
             ReLU = ReLUGPU
@@ -60,8 +60,8 @@ def main():
             log(rank, f"GPU backend import failed: {e}")
             sys.exit(1)
     else:
-        from core import Linear, ReLU, CrossEntropyLoss, SGD
-        from allreduce_cpu import RingAllReducer
+        from core.core import Linear, ReLU, CrossEntropyLoss, SGD
+        from comms.allreduce_cpu import RingAllReducer
         xp = np
         log(rank, "CPU backend loaded")
 

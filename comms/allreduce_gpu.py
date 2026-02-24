@@ -15,13 +15,13 @@ from pathlib import Path
 from enum import Enum
 
 # Import fault tolerance modules
-from udp_reliable import ReliableUDP
-from gosip import GossipProtocol
-from heartbeats import HeartbeatMonitor
+from comms.udp_reliable import ReliableUDP
+from comms.gosip import GossipProtocol
+from comms.heartbeats import HeartbeatMonitor
 
 # Fast sockets (C extension for faster I/O with GIL release)
 try:
-    import fast_net
+    import comms.fast_net as fast_net
     HAS_FAST_NET = True
 except ImportError:
     HAS_FAST_NET = False

@@ -16,9 +16,9 @@ import gc
 # 1. Imports
 try:
     import cupy as cp
-    from load_cifar import load_cifar10
-    from core_cnn import Conv2d, MaxPool2d, Flatten, GlobalAvgPool2d, BatchNorm2d, Dropout
-    from core_gpu import LinearGPU, ReLUGPU, CrossEntropyLossGPU, AdamW_GPU, CosineAnnealingLR_GPU
+    from datasets.load_cifar import load_cifar10
+    from core.core_cnn import Conv2d, MaxPool2d, Flatten, GlobalAvgPool2d, BatchNorm2d, Dropout
+    from core.core_gpu import LinearGPU, ReLUGPU, CrossEntropyLossGPU, AdamW_GPU, CosineAnnealingLR_GPU
 except ImportError:
     pass # Will handle backend check in main
 
@@ -98,7 +98,7 @@ def main():
 
     # Import backend-specific communication lib
     try:
-        from allreduce_gpu import FaultTolerantRingAllReducer
+        from comms.allreduce_gpu import FaultTolerantRingAllReducer
     except ImportError as e:
         print(f"Failed to import GPU communication lib: {e}")
         sys.exit(1)

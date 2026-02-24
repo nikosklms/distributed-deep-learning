@@ -19,8 +19,12 @@ venv.bak/
 *.gz
 *.pkl
 data/
-datasets/
+datasets/*.csv
+datasets/*.gz
+datasets/*.pkl
 
 # Temporary files
 *.tmp
 mnist_image.png
+docs/
+tests/
